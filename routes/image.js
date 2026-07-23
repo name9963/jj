@@ -5,6 +5,7 @@ const router = express.Router()
 const path = require('path')
 const fs = require('fs')
 const { removeWatermark } = require('../utils/imageInpaint')
+const { removeWatermarkByApi } = require('../utils/tencentErase')
 
 // POST /api/image/remove-watermark
 router.post('/remove-watermark', async (req, res) => {
@@ -17,7 +18,6 @@ router.post('/remove-watermark', async (req, res) => {
 
     console.log(`[Image] 去水印请求: ${imageUrl}`)
 
-    // 将URL转为本地路径（文件通过 /api/upload 上传后返回的URL）
     const imagePath = urlToLocalPath(imageUrl)
     const maskPath = urlToLocalPath(maskUrl)
 
@@ -28,10 +28,18 @@ router.post('/remove-watermark', async (req, res) => {
       return res.json({ code: -1, msg: '遮罩文件不存在', data: null })
     }
 
-    // 执行去水印
-    const resultPath = await removeWatermark(imagePath, maskPath)
+    let resultPath = null
 
-    // 转为可访问的URL
+    // 优先调用腾讯云 AI 去水印（效果更好）
+    try {
+      resultPath = await removeWatermarkByApi(imagePath)
+      console.log(`[Image] 腾讯云API去水印成功`)
+    } catch (apiErr) {
+      console.log(`[Image] 腾讯云API失败(${apiErr.message})，回退本地算法`)
+      // 回退到本地 inpainting 算法
+      resultPath = await removeWatermark(imagePath, maskPath)
+    }
+
     const fileName = path.basename(resultPath)
     const resultUrl = `/uploads/${fileName}`
 
