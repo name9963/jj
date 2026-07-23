@@ -104,12 +104,14 @@ async function parseKuaishou(url) {
 
   const html = res.data
 
-  // 从页面中提取视频数据
-  const videoMatch = html.match(/"playUrl"\s*:\s*"([^"]+)"/) ||
+  // 从页面中提取视频数据（兼容新旧版页面结构）
+  const videoMatch = html.match(/"url"\s*:\s*"(https?:\/\/[^"]*\.mp4[^"]*)"/) ||
+                     html.match(/"playUrl"\s*:\s*"([^"]+)"/) ||
                      html.match(/"srcNoMark"\s*:\s*"([^"]+)"/) ||
                      html.match(/"photoUrl"\s*:\s*"([^"]+)"/)
 
-  const coverMatch = html.match(/"coverUrl"\s*:\s*"([^"]+)"/)
+  const coverMatch = html.match(/"coverUrl"\s*:\s*"([^"]+)"/) ||
+                     html.match(/"poster"\s*:\s*"(https?:\/\/[^"]+)"/)
   const titleMatch = html.match(/"caption"\s*:\s*"([^"]+)"/)
 
   if (!videoMatch) throw new Error('无法解析快手视频')
