@@ -6,6 +6,11 @@ const path = require('path')
 const fs = require('fs')
 const { removeWatermark } = require('../utils/imageInpaint')
 const { removeWatermarkByApi } = require('../utils/tencentErase')
+const { removeWatermarkAndSave } = require('../utils/aliyunErase')
+
+// 云托管公网域名（用于拼接图片的公网URL给阿里云API）
+const PUBLIC_DOMAIN = process.env.PUBLIC_DOMAIN ||
+  'https://express-vyz1-286021-10-1457360213.sh.run.tcloudbase.com'
 
 // POST /api/image/remove-watermark
 router.post('/remove-watermark', async (req, res) => {
@@ -30,14 +35,24 @@ router.post('/remove-watermark', async (req, res) => {
 
     let resultPath = null
 
-    // 优先调用腾讯云 AI 去水印（效果更好）
+    // 方案1：阿里云智能消除（效果最好，支持透明字块/文字识别消除）
     try {
-      resultPath = await removeWatermarkByApi(imagePath)
-      console.log(`[Image] 腾讯云API去水印成功`)
-    } catch (apiErr) {
-      console.log(`[Image] 腾讯云API失败(${apiErr.message})，回退本地算法`)
-      // 回退到本地 inpainting 算法
-      resultPath = await removeWatermark(imagePath, maskPath)
+      const publicUrl = `${PUBLIC_DOMAIN}${imageUrl}`
+      resultPath = await removeWatermarkAndSave(publicUrl)
+      console.log(`[Image] 阿里云AI去水印成功`)
+    } catch (aliErr) {
+      console.log(`[Image] 阿里云API失败(${aliErr.message})`)
+
+      // 方案2：腾讯云去水印
+      try {
+        resultPath = await removeWatermarkByApi(imagePath)
+        console.log(`[Image] 腾讯云API去水印成功`)
+      } catch (txErr) {
+        console.log(`[Image] 腾讯云API失败(${txErr.message})，回退本地算法`)
+
+        // 方案3：本地 inpainting 算法
+        resultPath = await removeWatermark(imagePath, maskPath)
+      }
     }
 
     const fileName = path.basename(resultPath)
