@@ -69,6 +69,11 @@ function inpaint(imageBuffer, mask, width, height) {
   const channels = 4
   const totalPixels = width * height
 
+  // === 阶段0：文字检测 + 背景重建 ===
+  // 在遮罩区域内，用中值滤波估算每个像素的背景色
+  // 偏离背景色较大的像素视为"文字"，直接替换为背景色
+  removeTextInMask(result, mask, width, height, channels)
+
   const dist = computeDistance(mask, width, height)
   let maxDist = 0
   for (let i = 0; i < totalPixels; i++) {
@@ -214,6 +219,71 @@ function lightSmooth(buffer, mask, width, height, channels) {
         }
         // 70% 原值 + 30% 均值（轻微平滑）
         buffer[offset + c] = Math.round(copy[offset + c] * 0.7 + (sum / 9) * 0.3)
+      }
+    }
+  }
+}
+
+/**
+ * 文字检测 + 背景重建
+ * 原理：在遮罩区域内，用较大窗口的中值滤波估算背景色
+ * 文字像素与背景色偏差大 → 识别为文字 → 替换为估算的背景色
+ * 这样后续扩散填充时，起点就是干净的背景，不会把文字颜色扩散出去
+ */
+function removeTextInMask(buffer, mask, width, height, channels) {
+  const WINDOW = 9  // 中值滤波窗口半径
+  const TEXT_THRESHOLD = 45  // 色差阈值：超过此值视为文字像素
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x
+      if (mask[idx] !== 1) continue
+
+      const offset = idx * channels
+      const curR = buffer[offset]
+      const curG = buffer[offset + 1]
+      const curB = buffer[offset + 2]
+
+      // 收集周围非遮罩像素（或同区域内像素）的颜色，计算中值作为背景估算
+      const rVals = []
+      const gVals = []
+      const bVals = []
+
+      for (let dy = -WINDOW; dy <= WINDOW; dy += 2) {
+        for (let dx = -WINDOW; dx <= WINDOW; dx += 2) {
+          const nx = x + dx, ny = y + dy
+          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue
+          const nIdx = ny * width + nx
+          // 优先采样非遮罩像素（真实背景）
+          if (mask[nIdx] === 0) {
+            const nOff = nIdx * channels
+            rVals.push(buffer[nOff])
+            gVals.push(buffer[nOff + 1])
+            bVals.push(buffer[nOff + 2])
+          }
+        }
+      }
+
+      // 如果周围没有足够的背景像素，跳过（交给扩散填充处理）
+      if (rVals.length < 3) continue
+
+      // 计算中值（比均值更抗文字干扰）
+      rVals.sort((a, b) => a - b)
+      gVals.sort((a, b) => a - b)
+      bVals.sort((a, b) => a - b)
+      const mid = Math.floor(rVals.length / 2)
+      const bgR = rVals[mid]
+      const bgG = gVals[mid]
+      const bgB = bVals[mid]
+
+      // 计算当前像素与估算背景的色差
+      const diff = Math.abs(curR - bgR) + Math.abs(curG - bgG) + Math.abs(curB - bgB)
+
+      // 色差超过阈值 → 判定为文字像素 → 替换为背景色
+      if (diff > TEXT_THRESHOLD) {
+        buffer[offset] = bgR
+        buffer[offset + 1] = bgG
+        buffer[offset + 2] = bgB
       }
     }
   }
