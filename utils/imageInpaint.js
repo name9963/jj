@@ -48,6 +48,9 @@ async function removeWatermark(imagePath, maskPath) {
 
   // 输出结果图片
   const outputDir = path.join(__dirname, '..', 'uploads')
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true })
+  }
   const outputPath = path.join(outputDir, `result_${Date.now()}.png`)
 
   await sharp(result, {
