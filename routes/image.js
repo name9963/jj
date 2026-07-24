@@ -1,16 +1,11 @@
 // server/routes/image.js
-// 图片去水印路由：阿里云智能消除 → 腾讯云 → 本地算法
+// 图片去水印路由：LaMa AI修复 → 本地算法兜底
 const express = require('express')
 const router = express.Router()
 const path = require('path')
 const fs = require('fs')
 const { removeWatermark } = require('../utils/imageInpaint')
-const { removeWatermarkByApi } = require('../utils/tencentErase')
-const { removeWatermarkAndSave } = require('../utils/aliyunErase')
-
-// 云托管公网域名（用于拼接图片的公网URL给阿里云API）
-const PUBLIC_DOMAIN = process.env.PUBLIC_DOMAIN ||
-  'https://express-vyz1-286021-10-1457360213.sh.run.tcloudbase.com'
+const { inpaintByLama } = require('../utils/lamaClient')
 
 // uploads 目录绝对路径，用于路径穿越校验
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads')
@@ -39,26 +34,15 @@ router.post('/remove-watermark', async (req, res) => {
       return res.json({ code: -1, msg: '遮罩文件不存在', data: null })
     }
 
-    let resultPath = null
-
-    // 方案1：阿里云智能消除（效果最好）
+    // 方案1：LaMa AI 修复，效果最好
+    let resultPath
     try {
-      const publicUrl = `${PUBLIC_DOMAIN}${imageUrl}`
-      resultPath = await removeWatermarkAndSave(publicUrl)
-      console.log(`[Image] 阿里云AI去水印成功`)
-    } catch (aliErr) {
-      console.log(`[Image] 阿里云API失败(${aliErr.message})`)
-
-      // 方案2：腾讯云去水印
-      try {
-        resultPath = await removeWatermarkByApi(imagePath)
-        console.log(`[Image] 腾讯云API去水印成功`)
-      } catch (txErr) {
-        console.log(`[Image] 腾讯云API失败(${txErr.message})，回退本地算法`)
-
-        // 方案3：本地 inpainting 算法
-        resultPath = await removeWatermark(imagePath, maskPath)
-      }
+      resultPath = await inpaintByLama(imagePath, maskPath)
+      console.log('[Image] LaMa AI去水印成功')
+    } catch (aiErr) {
+      // 方案2：LaMa 服务不可用 → 回退本地 inpainting 算法
+      console.log(`[Image] LaMa失败(${aiErr.message})，回退本地算法`)
+      resultPath = await removeWatermark(imagePath, maskPath)
     }
 
     const fileName = path.basename(resultPath)
@@ -68,7 +52,7 @@ router.post('/remove-watermark', async (req, res) => {
     res.json({ code: 0, msg: 'success', data: { resultUrl } })
   } catch (err) {
     console.error(`[Image] 处理失败: ${err.message}`)
-    res.json({ code: -1, msg: err.message || '处理失败', data: null })
+    res.json({ code: -1, msg: '图片处理失败，请重试', data: null })
   }
 })
 
