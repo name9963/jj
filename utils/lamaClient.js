@@ -58,7 +58,7 @@ async function inpaintByLama(imagePath, maskPath) {
         'Content-Type': `multipart/form-data; boundary=${boundary}`,
         'Content-Length': bodyBuffer.length
       },
-      timeout: 60000
+      timeout: 180000
     }, (res) => {
       if (res.statusCode !== 200) {
         let errData = ''
