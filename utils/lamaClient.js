@@ -4,7 +4,6 @@ const http = require('http')
 const https = require('https')
 const fs = require('fs')
 const path = require('path')
-const FormData = require('./formData')
 
 // LaMa 服务地址（云托管内网或公网）
 const LAMA_BASE = process.env.LAMA_SERVICE_URL || 'http://localhost:8000'
