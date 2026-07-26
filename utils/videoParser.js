@@ -21,7 +21,7 @@ async function parseVideo(url) {
     return parseDouyin(cleanUrl)
   } else if (cleanUrl.includes('kuaishou.com') || cleanUrl.includes('gifshow.com')) {
     return parseKuaishou(cleanUrl)
-  } else if (cleanUrl.includes('xiaohongshu.com') || cleanUrl.includes('xhslink.com')) {
+  } else if (cleanUrl.includes('xiaohongshu.com') || cleanUrl.includes('xhslink.com') || cleanUrl.includes('xhslink.cn')) {
     return parseXiaohongshu(cleanUrl)
   } else if (cleanUrl.includes('weibo.com') || cleanUrl.includes('weibo.cn')) {
     return parseWeibo(cleanUrl)
@@ -147,7 +147,11 @@ async function parseKuaishou(url) {
 }
 
 /**
- * 小红书解析
+ * 小红书解析。
+ * 页面里 sns-video 域名字符串会出现多次(推荐位/相关笔记等无关数据也含有)，
+ * 用全局正则"随便抓一个"拿到的地址可能跟当前笔记完全无关；
+ * 改为从页面内嵌的 window.__INITIAL_STATE__ 里按 noteData.data.noteData
+ * 精确取当前这条笔记的数据，笔记类型(note.type)为 "video" 才继续，否则是图文笔记直接报错。
  */
 async function parseXiaohongshu(url) {
   const realUrl = await getRedirectUrl(url)
@@ -158,24 +162,31 @@ async function parseXiaohongshu(url) {
 
   const html = res.data
 
-  // 提取视频地址
-  const videoMatch = html.match(/"originVideoKey"\s*:\s*"([^"]+)"/) ||
-                     html.match(/"url"\s*:\s*"(https:\/\/sns-video[^"]+)"/)
+  const stateMatch = html.match(/window\.__INITIAL_STATE__\s*=\s*(\{.+?\})\s*<\/script>/)
+  if (!stateMatch) throw new Error('无法解析小红书页面数据')
 
-  const coverMatch = html.match(/"cover"\s*:\s*{\s*"url"\s*:\s*"([^"]+)"/)
-  const titleMatch = html.match(/"title"\s*:\s*"([^"]+)"/)
+  // 小红书页面里未定义字段用 undefined 而非 null 表示，标准JSON.parse无法识别
+  const stateJson = stateMatch[1].replace(/:undefined/g, ':null')
+  const state = JSON.parse(stateJson)
+  const note = state.noteData && state.noteData.data && state.noteData.data.noteData
+  if (!note) throw new Error('笔记不存在或已被删除')
 
-  if (!videoMatch) throw new Error('无法解析小红书视频，可能是图文笔记')
+  const title = note.title || note.desc || '小红书笔记'
 
-  let videoUrl = videoMatch[1]
-  if (!videoUrl.startsWith('http')) {
-    videoUrl = `https://sns-video-bd.xhscdn.com/${videoUrl}`
+  if (note.type !== 'video' || !note.video) {
+    throw new Error('该笔记是图文笔记，暂不支持解析')
   }
 
+  const h264List = note.video.media && note.video.media.stream && note.video.media.stream.h264
+  if (!h264List || !h264List[0]) throw new Error('无法获取小红书视频播放地址')
+
+  // 封面用视频首帧图(imageList[0])的完整URL；fileId本身不能直接拼出可用链接(缺签名路径段)
+  const coverUrl = note.imageList && note.imageList[0] && note.imageList[0].url
+
   return {
-    videoUrl,
-    cover: coverMatch ? coverMatch[1] : '',
-    title: titleMatch ? titleMatch[1] : '小红书视频'
+    videoUrl: h264List[0].masterUrl,
+    cover: coverUrl || '',
+    title
   }
 }
 
