@@ -62,34 +62,55 @@ async function getRedirectUrl(url) {
 
 /**
  * 抖音解析
+ * 官方 JSON API(iesdouyin.com/web/api/v2/aweme/iteminfo)已加入签名校验，
+ * 直连会返回 encrypt_data_miss，因此改为请求分享页 HTML，
+ * 从页面内嵌的 _ROUTER_DATA(Next.js SSR 数据) 里取作品信息。
+ * 该数据同时覆盖普通视频(/share/video/)和图文作品(/share/note/)两种页面。
  */
 async function parseDouyin(url) {
-  // 短链接先获取重定向
+  // 短链接先获取重定向，落地到 iesdouyin.com/share/video|note/<id>/
   const realUrl = await getRedirectUrl(url)
 
-  // 提取视频ID
-  const idMatch = realUrl.match(/video\/(\d+)/) || realUrl.match(/modal_id=(\d+)/)
-  if (!idMatch) throw new Error('无法解析抖音视频ID')
+  const res = await axios.get(realUrl, { headers: HEADERS })
+  const html = res.data
 
-  const videoId = idMatch[1]
+  const routerMatch = html.match(/_ROUTER_DATA\s*=\s*(\{.+?\})\s*<\/script>/)
+  if (!routerMatch) throw new Error('无法解析抖音页面数据')
 
-  // 通过网页接口获取视频信息
-  const apiUrl = `https://www.iesdouyin.com/web/api/v2/aweme/iteminfo/?item_ids=${videoId}`
-  const res = await axios.get(apiUrl, { headers: HEADERS })
-
-  const item = res.data.item_list && res.data.item_list[0]
+  const routerData = JSON.parse(routerMatch[1])
+  const pageKey = Object.keys(routerData.loaderData || {}).find(k => k.endsWith('/page'))
+  const item = pageKey && routerData.loaderData[pageKey].videoInfoRes &&
+               routerData.loaderData[pageKey].videoInfoRes.item_list &&
+               routerData.loaderData[pageKey].videoInfoRes.item_list[0]
   if (!item) throw new Error('视频不存在或已被删除')
 
-  // 获取无水印视频地址
+  const title = item.desc || '抖音视频'
+
+  // 图文作品(aweme_type=68 等)：images 非空，取第一张图返回(封面即结果图)
+  if (item.images && item.images.length > 0) {
+    const imageUrl = pickImageUrl(item.images[0].url_list)
+    return { videoUrl: imageUrl, cover: imageUrl, title, isImage: true }
+  }
+
+  // 普通视频：获取无水印地址(playwm→play)
   let videoUrl = item.video.play_addr.url_list[0]
-  // 替换为无水印地址
   videoUrl = videoUrl.replace('playwm', 'play')
 
   return {
     videoUrl,
-    cover: item.video.cover.url_list[0] || '',
-    title: item.desc || '抖音视频'
+    cover: (item.video.cover && item.video.cover.url_list[0]) || '',
+    title
   }
+}
+
+/**
+ * 从图文 url_list 里选一个链接：优先选 jpeg 格式(小程序 image 组件对 webp 兼容性不如 jpeg)，
+ * 找不到就用最后一项(通常是清晰度适中的版本)。
+ */
+function pickImageUrl(urlList) {
+  if (!urlList || urlList.length === 0) return ''
+  const jpeg = urlList.find(u => /\.jpe?g(\?|$)/i.test(u))
+  return jpeg || urlList[urlList.length - 1]
 }
 
 /**
