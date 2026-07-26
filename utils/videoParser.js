@@ -217,7 +217,9 @@ async function parseWeibo(url) {
 }
 
 /**
- * 皮皮虾解析
+ * 皮皮虾解析。
+ * 页面里有 <script id="RENDER_DATA" type="application/json"> 标签,
+ * 内容是整体URL编码的JSON,解码后从 ppxItemDetail.item.video 取视频地址。
  */
 async function parsePipix(url) {
   const realUrl = await getRedirectUrl(url)
@@ -225,15 +227,24 @@ async function parsePipix(url) {
   const res = await axios.get(realUrl, { headers: HEADERS })
   const html = res.data
 
-  const videoMatch = html.match(/"video_url"\s*:\s*"([^"]+)"/)
-  const titleMatch = html.match(/"content"\s*:\s*"([^"]+)"/)
+  const match = html.match(/<script id="RENDER_DATA" type="application\/json">(.+?)<\/script>/)
+  if (!match) throw new Error('无法解析皮皮虾页面数据')
 
-  if (!videoMatch) throw new Error('无法解析皮皮虾视频')
+  const decoded = decodeURIComponent(match[1])
+  const data = JSON.parse(decoded)
+  const item = data.ppxItemDetail && data.ppxItemDetail.item
+  if (!item || !item.video) throw new Error('视频不存在或已被删除')
+
+  const video = item.video
+  const videoUrl = video.video_download && video.video_download.url_list && video.video_download.url_list[0] && video.video_download.url_list[0].url
+  if (!videoUrl) throw new Error('无法获取皮皮虾视频播放地址')
+
+  const coverUrl = video.cover_image && video.cover_image.url_list && video.cover_image.url_list[0] && video.cover_image.url_list[0].url
 
   return {
-    videoUrl: videoMatch[1].replace(/\\u002F/g, '/'),
-    cover: '',
-    title: titleMatch ? titleMatch[1] : '皮皮虾视频'
+    videoUrl,
+    cover: coverUrl || '',
+    title: item.content || video.title || '皮皮虾视频'
   }
 }
 
