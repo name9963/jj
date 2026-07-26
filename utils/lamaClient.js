@@ -4,31 +4,55 @@ const http = require('http')
 const https = require('https')
 const fs = require('fs')
 const path = require('path')
+const sharp = require('sharp')
 
 // IOPaint 服务地址
 const INPAINT_BASE = process.env.LAMA_SERVICE_URL || 'http://localhost:8000'
 
+// 推理最大边长（缩小以加速，避免网关超时）
+const MAX_SIDE = 512
+
 /**
  * 调用 IOPaint 服务进行图像修复
- * IOPaint API 接受 base64 编码的 JSON 请求
+ * 先缩小图片加速推理，处理完再放大回原尺寸
  * @param {string} imagePath - 原图本地路径
  * @param {string} maskPath - 遮罩图本地路径
  * @returns {Promise<string>} 结果图本地路径
  */
 async function inpaintByLama(imagePath, maskPath) {
-  const imageBuffer = fs.readFileSync(imagePath)
-  const maskBuffer = fs.readFileSync(maskPath)
+  // 读取原图获取尺寸
+  const imageMeta = await sharp(imagePath).metadata()
+  const origWidth = imageMeta.width
+  const origHeight = imageMeta.height
+
+  // 缩小到最大边 MAX_SIDE
+  let procImageBuffer, procMaskBuffer
+  const needResize = Math.max(origWidth, origHeight) > MAX_SIDE
+
+  if (needResize) {
+    procImageBuffer = await sharp(imagePath)
+      .resize(MAX_SIDE, MAX_SIDE, { fit: 'inside', withoutEnlargement: true })
+      .png()
+      .toBuffer()
+    procMaskBuffer = await sharp(maskPath)
+      .resize(MAX_SIDE, MAX_SIDE, { fit: 'inside', withoutEnlargement: true })
+      .png()
+      .toBuffer()
+  } else {
+    procImageBuffer = fs.readFileSync(imagePath)
+    procMaskBuffer = fs.readFileSync(maskPath)
+  }
 
   const payload = JSON.stringify({
-    image: imageBuffer.toString('base64'),
-    mask: maskBuffer.toString('base64')
+    image: procImageBuffer.toString('base64'),
+    mask: procMaskBuffer.toString('base64')
   })
 
   const url = new URL(`${INPAINT_BASE}/api/v1/inpaint`)
   const isHttps = url.protocol === 'https:'
   const transport = isHttps ? https : http
 
-  return new Promise((resolve, reject) => {
+  const resultBuffer = await new Promise((resolve, reject) => {
     const req = transport.request({
       hostname: url.hostname,
       port: url.port || (isHttps ? 443 : 80),
@@ -47,20 +71,10 @@ async function inpaintByLama(imagePath, maskPath) {
         return
       }
 
-      // 保存返回的图片
-      const outputDir = path.join(__dirname, '..', 'uploads')
-      if (!fs.existsSync(outputDir)) {
-        fs.mkdirSync(outputDir, { recursive: true })
-      }
-      const outputPath = path.join(outputDir, `result_${Date.now()}.png`)
-      const fileStream = fs.createWriteStream(outputPath)
-
-      res.pipe(fileStream)
-      fileStream.on('finish', () => {
-        fileStream.close()
-        resolve(outputPath)
-      })
-      fileStream.on('error', reject)
+      const chunks = []
+      res.on('data', chunk => chunks.push(chunk))
+      res.on('end', () => resolve(Buffer.concat(chunks)))
+      res.on('error', reject)
     })
 
     req.on('error', (err) => reject(new Error(`Inpaint服务连接失败: ${err.message}`)))
@@ -68,6 +82,25 @@ async function inpaintByLama(imagePath, maskPath) {
     req.write(payload)
     req.end()
   })
+
+  // 如果之前缩小了，把结果放大回原尺寸
+  let finalBuffer = resultBuffer
+  if (needResize) {
+    finalBuffer = await sharp(resultBuffer)
+      .resize(origWidth, origHeight, { fit: 'fill' })
+      .png()
+      .toBuffer()
+  }
+
+  // 保存结果
+  const outputDir = path.join(__dirname, '..', 'uploads')
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true })
+  }
+  const outputPath = path.join(outputDir, `result_${Date.now()}.png`)
+  fs.writeFileSync(outputPath, finalBuffer)
+
+  return outputPath
 }
 
 module.exports = { inpaintByLama }
