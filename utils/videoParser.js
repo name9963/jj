@@ -27,6 +27,8 @@ async function parseVideo(url) {
     return parseWeibo(cleanUrl)
   } else if (cleanUrl.includes('pipix.com')) {
     return parsePipix(cleanUrl)
+  } else if (cleanUrl.includes('bilibili.com') || cleanUrl.includes('b23.tv')) {
+    return parseBilibili(cleanUrl)
   } else {
     // 尝试通用解析
     return parseGeneric(cleanUrl)
@@ -225,6 +227,43 @@ async function parsePipix(url) {
 }
 
 /**
+ * B站解析。
+ * 官方 view/playurl 接口需要请求头带 Referer:bilibili.com，小程序端 wx.downloadFile
+ * 不允许自定义该 header，所以这里返回的地址不是CDN直链，而是走本服务代理端点，
+ * 由服务器代为携带 Referer 请求 CDN 后原样转发给小程序(见 routes/video.js /proxy)。
+ * 未登录状态最高只能拿到 qn=64(480P)清晰度。
+ */
+async function parseBilibili(url) {
+  const realUrl = url.includes('b23.tv') ? await getRedirectUrl(url) : url
+
+  const bvidMatch = realUrl.match(/BV[0-9A-Za-z]{10}/)
+  if (!bvidMatch) throw new Error('无法识别B站视频BV号')
+  const bvid = bvidMatch[0]
+
+  const biliHeaders = { ...HEADERS, Referer: 'https://www.bilibili.com/', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' }
+
+  const viewRes = await axios.get(`https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`, { headers: biliHeaders })
+  if (viewRes.data.code !== 0) throw new Error(viewRes.data.message || 'B站视频不存在或已被删除')
+  const { cid, title, pic } = viewRes.data.data
+
+  const playRes = await axios.get(
+    `https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=64&fnval=1&platform=html5`,
+    { headers: biliHeaders }
+  )
+  if (playRes.data.code !== 0 || !playRes.data.data.durl || !playRes.data.data.durl[0]) {
+    throw new Error(playRes.data.message || '无法获取B站视频播放地址')
+  }
+  const cdnUrl = playRes.data.data.durl[0].url
+
+  return {
+    videoUrl: `/api/video/proxy?url=${encodeURIComponent(cdnUrl)}`,
+    cover: pic || '',
+    title: title || 'B站视频',
+    needsProxy: true // 提示前端此地址需拼服务器域名前缀(相对路径)，与抖音等平台的绝对CDN地址不同
+  }
+}
+
+/**
  * 通用解析（尝试从页面meta标签提取）
  */
 async function parseGeneric(url) {
@@ -248,4 +287,14 @@ async function parseGeneric(url) {
   throw new Error('暂不支持该平台，请使用抖音、快手、小红书等主流平台链接')
 }
 
-module.exports = { parseVideo }
+/** 代理端点用：只允许转发 B 站官方 CDN 域名，防止被当成任意地址的匿名代理(SSRF) */
+function isAllowedProxyTarget(urlStr) {
+  try {
+    const { hostname, protocol } = new URL(urlStr)
+    return protocol === 'https:' && /(^|\.)bilivideo\.com$/.test(hostname)
+  } catch {
+    return false
+  }
+}
+
+module.exports = { parseVideo, isAllowedProxyTarget }
