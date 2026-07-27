@@ -17,22 +17,32 @@ async function parseVideo(url) {
   const cleanUrl = extractUrl(url)
   if (!cleanUrl) throw new Error('无法识别有效链接')
 
+  let result
   if (cleanUrl.includes('douyin.com') || cleanUrl.includes('iesdouyin.com')) {
-    return parseDouyin(cleanUrl)
+    result = await parseDouyin(cleanUrl)
   } else if (cleanUrl.includes('kuaishou.com') || cleanUrl.includes('gifshow.com')) {
-    return parseKuaishou(cleanUrl)
+    result = await parseKuaishou(cleanUrl)
   } else if (cleanUrl.includes('xiaohongshu.com') || cleanUrl.includes('xhslink.com') || cleanUrl.includes('xhslink.cn')) {
-    return parseXiaohongshu(cleanUrl)
+    result = await parseXiaohongshu(cleanUrl)
   } else if (cleanUrl.includes('weibo.com') || cleanUrl.includes('weibo.cn')) {
-    return parseWeibo(cleanUrl)
+    result = await parseWeibo(cleanUrl)
   } else if (cleanUrl.includes('pipix.com')) {
-    return parsePipix(cleanUrl)
+    result = await parsePipix(cleanUrl)
   } else if (cleanUrl.includes('bilibili.com') || cleanUrl.includes('b23.tv')) {
-    return parseBilibili(cleanUrl)
+    result = await parseBilibili(cleanUrl)
   } else {
     // 尝试通用解析
-    return parseGeneric(cleanUrl)
+    result = await parseGeneric(cleanUrl)
   }
+
+  // 统一改走服务器代理下载（B站已在自己解析里包好，这里跳过相对路径）：
+  // wx.downloadFile 只能访问白名单域名，各平台 CDN 域名无法穷举加白，
+  // 且部分 CDN 校验 Referer；前端对相对路径会自动拼后端域名，
+  // 只需把后端域名加入 downloadFile 合法域名即可保存到相册。
+  if (result && result.videoUrl && /^https?:\/\//i.test(result.videoUrl)) {
+    result.videoUrl = `/api/video/proxy?url=${encodeURIComponent(result.videoUrl)}`
+  }
+  return result
 }
 
 /**
@@ -309,11 +319,29 @@ async function parseGeneric(url) {
   throw new Error('暂不支持该平台，请使用抖音、快手、小红书等主流平台链接')
 }
 
-/** 代理端点用：只允许转发 B 站官方 CDN 域名，防止被当成任意地址的匿名代理(SSRF) */
+/** 代理白名单：只允许转发已支持平台的官方 CDN 域名，防止被当成任意地址的匿名代理(SSRF) */
+const PROXY_HOST_WHITELIST = [
+  /(^|\.)bilivideo\.com$/,   // B站
+  /(^|\.)douyinvod\.com$/,   // 抖音视频CDN
+  /(^|\.)zjcdn\.com$/,       // 字节系CDN(抖音/皮皮虾)
+  /(^|\.)bytecdn\.cn$/,
+  /(^|\.)snssdk\.com$/,
+  /(^|\.)iesdouyin\.com$/,
+  /(^|\.)douyinpic\.com$/,   // 抖音图集
+  /(^|\.)kwaicdn\.com$/,     // 快手
+  /(^|\.)kwimgs\.com$/,
+  /(^|\.)gifshow\.com$/,
+  /(^|\.)xhscdn\.com$/,      // 小红书
+  /(^|\.)weibocdn\.com$/,    // 微博
+  /(^|\.)sinaimg\.cn$/,
+  /(^|\.)pipix\.com$/        // 皮皮虾
+]
+
 function isAllowedProxyTarget(urlStr) {
   try {
     const { hostname, protocol } = new URL(urlStr)
-    return protocol === 'https:' && /(^|\.)bilivideo\.com$/.test(hostname)
+    if (protocol !== 'https:' && protocol !== 'http:') return false
+    return PROXY_HOST_WHITELIST.some(re => re.test(hostname))
   } catch {
     return false
   }

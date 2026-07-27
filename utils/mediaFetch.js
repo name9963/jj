@@ -21,10 +21,12 @@ function headersFor(url) {
   const headers = { 'User-Agent': MOBILE_UA }
   if (/bilivideo\.com|bilibili/.test(url)) {
     headers.Referer = 'https://www.bilibili.com/'
-  } else if (/kuaishou|gifshow/.test(url)) {
+  } else if (/kuaishou|gifshow|kwaicdn|kwimgs/.test(url)) {
     headers.Referer = 'https://www.kuaishou.com/'
   } else if (/xhscdn|xiaohongshu/.test(url)) {
     headers.Referer = 'https://www.xiaohongshu.com/'
+  } else if (/weibocdn|sinaimg|weibo/.test(url)) {
+    headers.Referer = 'https://weibo.com/'
   } else if (/douyin|iesdouyin|bytecdn|zjcdn/.test(url)) {
     headers.Referer = 'https://www.douyin.com/'
   }
@@ -100,4 +102,4 @@ async function downloadVideo(videoUrl) {
   })
 }
 
-module.exports = { downloadVideo }
+module.exports = { downloadVideo, headersFor }
