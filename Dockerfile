@@ -10,7 +10,7 @@
 # ============================================================
 
 # ---------- 第一阶段：编译 whisper.cpp + 下载模型 ----------
-FROM node:18-bookworm-slim AS builder
+FROM node:22-bookworm-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential cmake git wget ca-certificates \
@@ -62,7 +62,8 @@ RUN (wget -q -T 90 -O /out/lama.onnx \
       || { echo "lama.onnx 下载失败，运行时将回退传统算法"; : > /out/lama.onnx; }; }
 
 # ---------- 第二阶段：运行镜像 ----------
-FROM node:18-bookworm-slim
+# sharp@0.35.x 要求 Node.js >= 20.9，使用 Node 22 LTS，避免容器启动时原生模块拒绝加载。
+FROM node:22-bookworm-slim
 
 WORKDIR /app
 
@@ -76,7 +77,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /out/whisper-cli /usr/local/bin/whisper-cli
 
 COPY package*.json ./
-RUN npm install --production
+RUN npm ci --omit=dev \
+ && node -e "require('sharp'); console.log('sharp runtime ok')"
 
 COPY . .
 

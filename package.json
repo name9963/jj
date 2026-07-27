@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "去水印小程序后端服务",
   "main": "app.js",
+  "engines": {
+    "node": ">=20.9.0"
+  },
   "scripts": {
     "start": "node app.js",
     "dev": "node --watch app.js"
