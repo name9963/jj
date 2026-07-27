@@ -3,3 +3,7 @@ uploads/*.png
 uploads/*.jpg
 uploads/*.mp4
 .git
+# 上一版本地 Python LaMa 方案残留，几 GB，绝不能进镜像
+ai-venv
+ai-inpaint
+*.log

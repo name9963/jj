@@ -1,10 +1,12 @@
 // server/utils/imageInpaint.js
-// 本地图片去水印 —— 样本块修复算法(Criminisi exemplar-based inpainting)
-// 流程：解析涂抹遮罩 → 区域内检测文字/水印像素 → 膨胀 → 从周围复制真实纹理块填充 → 边界羽化
-// 核心优势：保留纹理细节，无模糊马赛克；纹理背景效果显著优于平滑插值
+// 本地图片去水印
+// 流程：解析涂抹遮罩 → 区域内检测文字/水印像素 → 膨胀 →
+//      优先用 LaMa AI 模型语义修复(models/lama.onnx 存在时) →
+//      模型不可用/失败则回退样本块修复(Criminisi exemplar-based inpainting) → 边界羽化
 const sharp = require('sharp')
 const path = require('path')
 const fs = require('fs')
+const { lamaInpaint } = require('./lamaInpaint')
 
 // 检测参数
 const BG_WINDOW = 7        // 背景色采样窗口半径
@@ -15,7 +17,8 @@ const CROP_MARGIN = 40     // 填充时裁剪包围盒外扩，保证有足够�
 
 // 样本块修复(Criminisi exemplar-based inpainting)参数
 const PATCH_RADIUS = 4       // 样本块半径，块边长 = 2*R+1 = 9，平衡纹理连贯性与性能
-const SEARCH_RADIUS = 32     // 在待填点周围多大范围内搜索最佳匹配块，利用纹理空间局部性
+const SEARCH_RADIUS = 48     // 搜索半径。需 > CROP_MARGIN 附近，否则空洞内部像素找不到真实背景，
+                              // 只能反复参考"修复结果的修复结果"，越往内部越失真、越有拼接感
 const SEARCH_STEP = 1        // 搜索步长，1=精确 2=快速
 const MAX_CANDIDATES = 1.5e7 // 候选块评估总预算，超出则剩余像素回退平滑填充
 const ALPHA = 255            // 数据项归一化常数
@@ -40,10 +43,13 @@ async function removeWatermark(imagePath, maskPath) {
   // 3. 膨胀，吃掉文字边缘的半透明像素
   hole = dilate(hole, width, height, HOLE_DILATE)
 
-  // 4. 用周围颜色平滑填充
-  fillSmooth(imageBuffer, hole, width, height)
+  // 4. 优先用 LaMa AI 模型语义修复；模型缺失或推理失败则回退样本块算法
+  const lamaOk = await lamaInpaint(imageBuffer, hole, width, height)
+  if (!lamaOk) {
+    fillSmooth(imageBuffer, hole, width, height)
+  }
 
-  // 5. 边界轻微羽化，消除接缝
+  // 5. 边界轻微羽化，消除裁剪/缩放带来的接缝
   featherBoundary(imageBuffer, hole, width, height)
 
   const outputDir = path.join(__dirname, '..', 'uploads')
@@ -205,6 +211,11 @@ function fillSmooth(buffer, hole, width, height) {
     }
   }
 
+  // exemplarInpaint 会就地把 filled 改成"已填=1"，这里先存一份原始 hole 范围，
+  // 后面接缝柔化只能动这个范围，绝不能碰原图真实像素
+  const wasHole = new Uint8Array(cw * ch)
+  for (let i = 0; i < cw * ch; i++) wasHole[i] = 1 - filled[i]
+
   // 1) 样本块修复：从周围复制真实纹理块（保留细节）
   exemplarInpaint(color, filled, cw, ch)
 
@@ -225,6 +236,10 @@ function fillSmooth(buffer, hole, width, height) {
       }
     }
   }
+
+  // 3) 接缝柔化：样本块是硬拷贝直接拼接，块与块边界会有可见接缝、显"涂抹感"。
+  // 只在原 hole 范围内做轻度局部平均混合(部分权重)，边界像素也会自然融合真实背景。
+  smoothSeams(color, wasHole, cw, ch)
 
   // 只写回 hole 像素
   for (let y = 0; y < ch; y++) {
@@ -477,6 +492,37 @@ function fillPatchMean(color, filled, gray, conf, tx, ty, bestConf, w, h, justFi
   conf[ti] = bestConf
   filled[ti] = 1
   justFilled.push(ti)
+}
+
+/**
+ * 接缝柔化：exemplar 是整块(9x9)硬拷贝，块与块边界处颜色可能有跳变，
+ * 看起来像"贴上去的补丁"。只在原 hole 范围内用极小窗口(半径1)、
+ * 低权重(35%)跟局部均值混合，专门磨掉硬边界，窗口小所以不会把纹理糊掉。
+ * 边界处的窗口天然会覆盖到真实背景像素，也帮助补丁与背景衔接得更自然。
+ */
+function smoothSeams(color, wasHole, w, h) {
+  const orig = Float32Array.from(color)
+  const RADIUS = 1
+  const BLEND = 0.35
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = y * w + x
+      if (!wasHole[idx]) continue
+      let r = 0, g = 0, b = 0, n = 0
+      for (let dy = -RADIUS; dy <= RADIUS; dy++) {
+        for (let dx = -RADIUS; dx <= RADIUS; dx++) {
+          const nx = x + dx, ny = y + dy
+          if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue
+          const nIdx = ny * w + nx
+          r += orig[nIdx * 3]; g += orig[nIdx * 3 + 1]; b += orig[nIdx * 3 + 2]
+          n++
+        }
+      }
+      color[idx * 3] = orig[idx * 3] * (1 - BLEND) + (r / n) * BLEND
+      color[idx * 3 + 1] = orig[idx * 3 + 1] * (1 - BLEND) + (g / n) * BLEND
+      color[idx * 3 + 2] = orig[idx * 3 + 2] * (1 - BLEND) + (b / n) * BLEND
+    }
+  }
 }
 
 function clamp(v) {

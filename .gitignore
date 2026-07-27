@@ -1,0 +1,18 @@
+# 依赖与运行产物（云托管构建时会自己 npm install）
+node_modules/
+*.log
+
+# 用户上传/处理结果，不入库
+uploads/*
+!uploads/.gitkeep
+
+# 本地实验用的独立服务与虚拟环境，不参与云托管构建
+ai-venv/
+ai-inpaint/
+
+# LaMa 模型体积大，构建时下载，不入库
+models/*.onnx
+
+# Python 缓存
+__pycache__/
+*.pyc

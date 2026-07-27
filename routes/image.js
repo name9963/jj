@@ -63,14 +63,12 @@ router.get('/result/:taskId', (req, res) => {
   }
 
   if (task.status === 'done') {
-    // 返回结果后删除任务（节省内存）
-    tasks.delete(taskId)
+    // 不立即删除：若本次响应丢包，前端下次轮询还能拿到结果；由定时清理兜底
     return res.json({ code: 0, msg: 'success', data: { status: 'done', resultUrl: task.resultUrl } })
   }
 
-  // failed
-  tasks.delete(taskId)
-  res.json({ code: -1, msg: task.error || '处理失败', data: { status: 'failed' } })
+  // failed：同样保留到定时清理；用 code 0 + status 返回，让前端能区分"任务失败"与"网络失败"
+  res.json({ code: 0, msg: 'failed', data: { status: 'failed', error: task.error || '处理失败' } })
 })
 
 // 异步处理函数
