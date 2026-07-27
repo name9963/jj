@@ -11,11 +11,11 @@ router.post('/parse', async (req, res) => {
   try {
     const { url } = req.body
 
-    if (!url || typeof url !== 'string') {
+    if (!url || typeof url !== 'string' || url.length > 2000) {
       return res.json({ code: -1, msg: '请提供有效的视频链接', data: null })
     }
 
-    console.log(`[Video] 解析请求: ${url}`)
+    console.log(`[Video] 解析请求: ${url.slice(0, 200)}`)
 
     const result = await parseVideo(url)
 
@@ -45,7 +45,14 @@ router.get('/proxy', async (req, res) => {
       responseType: 'stream',
       headers: headersFor(targetUrl),
       timeout: 30000,
-      maxRedirects: 5
+      maxRedirects: 5,
+      beforeRedirect: (options) => {
+        const port = options.port ? `:${options.port}` : ''
+        const redirectUrl = `${options.protocol}//${options.hostname}${port}${options.path || '/'}`
+        if (!isAllowedProxyTarget(redirectUrl)) {
+          throw new Error('视频地址重定向到了非白名单域名')
+        }
+      }
     })
 
     res.setHeader('Content-Type', upstream.headers['content-type'] || 'video/mp4')

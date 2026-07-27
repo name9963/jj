@@ -34,6 +34,10 @@ router.post('/extract', (req, res) => {
   if (!link && !videoUrl) {
     return res.json({ code: -1, msg: '请提供视频链接或先上传视频', data: null })
   }
+  if ((link && (typeof link !== 'string' || link.length > 2000)) ||
+      (videoUrl && (typeof videoUrl !== 'string' || videoUrl.length > 500))) {
+    return res.json({ code: -1, msg: '视频地址参数无效', data: null })
+  }
   if (running >= MAX_RUNNING) {
     return res.json({ code: -1, msg: '当前识别任务较多，请稍后再试', data: null })
   }

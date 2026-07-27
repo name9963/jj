@@ -31,7 +31,11 @@ function modelFileValid() {
 let sessionPromise = null
 function getSession() {
   if (!sessionPromise) {
-    sessionPromise = (ort && modelFileValid())
+    const disabled = process.env.DISABLE_LOCAL_LAMA === '1'
+    if (disabled) {
+      console.log('[LaMa] 已通过 DISABLE_LOCAL_LAMA 禁用本地 ONNX 推理')
+    }
+    sessionPromise = (!disabled && ort && modelFileValid())
       ? ort.InferenceSession.create(MODEL_PATH).catch(err => {
           console.error('[LaMa] 模型加载失败:', err.message)
           return null

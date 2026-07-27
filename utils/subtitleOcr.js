@@ -47,7 +47,12 @@ async function extractSubtitleText(videoPath) {
     const ordered = [] // 逐帧有效文本行（按时间顺序）
     let validFrames = 0
     for (const f of frames) {
-      const raw = await ocrImage(path.join(workDir, f)).catch(() => '')
+      const raw = await ocrImage(path.join(workDir, f)).catch(err => {
+        if (err && err.code === 'ENOENT') {
+          throw new Error('服务端未安装字幕识别引擎（tesseract 未找到）')
+        }
+        return ''
+      })
       const lines = cleanLines(raw)
       if (lines.length > 0) validFrames++
       for (const ln of lines) ordered.push(ln)
@@ -89,9 +94,16 @@ function extractFrames(videoPath, outDir) {
     '-frames:v', String(MAX_FRAMES),
     path.join(outDir, 'f_%04d.png')
   ]
-  return run(FFMPEG_BIN, args, FFMPEG_TIMEOUT_MS).then(({ code, stderr }) => {
-    if (code !== 0) throw new Error(`ffmpeg抽帧失败: ${stderr.slice(-200)}`)
-  })
+  return run(FFMPEG_BIN, args, FFMPEG_TIMEOUT_MS)
+    .then(({ code, stderr }) => {
+      if (code !== 0) throw new Error(`ffmpeg抽帧失败: ${stderr.slice(-200)}`)
+    })
+    .catch(err => {
+      if (err && err.code === 'ENOENT') {
+        throw new Error('服务端缺少 ffmpeg，无法抽取视频画面')
+      }
+      throw err
+    })
 }
 
 /** 对单帧做 OCR。psm 6：把裁剪区当作统一文本块；chi_sim 简体中文 */

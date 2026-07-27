@@ -4,7 +4,7 @@ const express = require('express')
 const router = express.Router()
 const path = require('path')
 const fs = require('fs')
-const { removeWatermark } = require('../utils/imageInpaint')
+const { removeWatermarkInWorker } = require('../utils/imageInpaintWorker')
 const { inpaintByLama } = require('../utils/lamaClient')
 
 // uploads 目录绝对路径，用于路径穿越校验
@@ -20,6 +20,10 @@ router.post('/remove-watermark', (req, res) => {
 
   if (!imageUrl || !maskUrl) {
     return res.json({ code: -1, msg: '缺少图片或遮罩参数', data: null })
+  }
+  if (typeof imageUrl !== 'string' || typeof maskUrl !== 'string' ||
+      imageUrl.length > 500 || maskUrl.length > 500) {
+    return res.json({ code: -1, msg: '图片地址参数无效', data: null })
   }
 
   const imagePath = urlToLocalPath(imageUrl)
@@ -80,7 +84,7 @@ async function processInpaint(taskId, imagePath, maskPath) {
       console.log(`[Image] LaMa AI去水印成功: ${taskId}`)
     } catch (aiErr) {
       console.log(`[Image] LaMa失败(${aiErr.message})，回退本地算法: ${taskId}`)
-      resultPath = await removeWatermark(imagePath, maskPath)
+      resultPath = await removeWatermarkInWorker(imagePath, maskPath)
     }
 
     const fileName = path.basename(resultPath)
