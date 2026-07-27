@@ -2,18 +2,36 @@
 // LaMa (Resolution-robust Large Mask Inpainting, Apache-2.0) AI 修复模型
 // 本地 ONNX 推理，无需网络/无按次收费，语义理解修复，效果显著优于样本块拼接
 // 模型来源: https://github.com/opencv/opencv_zoo/tree/main/models/inpainting_lama
-const ort = require('onnxruntime-node')
 const sharp = require('sharp')
 const path = require('path')
 const fs = require('fs')
 
+// 防御性加载：onnxruntime-node 是原生二进制(仅支持 glibc)，
+// 平台不兼容时 require 会直接抛错；绝不能因此拖崩整个服务，
+// 加载失败则禁用本地 AI 修复，上层自动回退传统算法。
+let ort = null
+try {
+  ort = require('onnxruntime-node')
+} catch (err) {
+  console.error('[LaMa] onnxruntime-node 加载失败，本地AI修复不可用:', err.message)
+}
+
 const MODEL_PATH = path.join(__dirname, '..', 'models', 'lama.onnx')
 const MODEL_SIZE = 512 // 模型固定输入/输出尺寸
+
+// 模型文件存在且大小合理才算有效（构建时下载失败会留空文件占位）
+function modelFileValid() {
+  try {
+    return fs.existsSync(MODEL_PATH) && fs.statSync(MODEL_PATH).size > 10 * 1024 * 1024
+  } catch {
+    return false
+  }
+}
 
 let sessionPromise = null
 function getSession() {
   if (!sessionPromise) {
-    sessionPromise = fs.existsSync(MODEL_PATH)
+    sessionPromise = (ort && modelFileValid())
       ? ort.InferenceSession.create(MODEL_PATH).catch(err => {
           console.error('[LaMa] 模型加载失败:', err.message)
           return null
