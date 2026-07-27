@@ -126,7 +126,12 @@ function pickImageUrl(urlList) {
 }
 
 /**
- * 快手解析
+ * 快手解析。
+ * 注意：页面里的 v*-vod.kwaicdn.com/....mp4 其实是 HLS remux 流(路径带 hls-ts，
+ * Content-Type 是 application/vnd.apple.mpegurl)，下载下来只是个 m3u8 文本清单，
+ * 会导致保存相册得到坏文件、口播提取抽音轨失败。
+ * 真正的 mp4 直链在 photoUrl/mainMvUrls 字段，域名为 kwimgs.com / yximgs.com，
+ * 因此优先取这些字段，并显式过滤掉含 hls/m3u8 的地址。
  */
 async function parseKuaishou(url) {
   const realUrl = await getRedirectUrl(url)
@@ -137,21 +142,33 @@ async function parseKuaishou(url) {
 
   const html = res.data
 
-  // 从页面中提取视频数据（兼容新旧版页面结构）
-  const videoMatch = html.match(/"url"\s*:\s*"(https?:\/\/[^"]*\.mp4[^"]*)"/) ||
-                     html.match(/"playUrl"\s*:\s*"([^"]+)"/) ||
-                     html.match(/"srcNoMark"\s*:\s*"([^"]+)"/) ||
-                     html.match(/"photoUrl"\s*:\s*"([^"]+)"/)
+  // 真 mp4 直链不含 hls-ts/m3u8；优先 photoUrl / srcNoMark / mainMvUrls
+  const isRealMp4 = (u) => u && /\.mp4/i.test(u) && !/hls|m3u8/i.test(u)
+  const norm = (u) => u.replace(/\\u002F/g, '/').replace(/\\\//g, '/')
+
+  let videoUrl = null
+  const prefer = html.match(/"photoUrl"\s*:\s*"([^"]+)"/) ||
+                 html.match(/"srcNoMark"\s*:\s*"([^"]+)"/) ||
+                 html.match(/"mainMvUrls"\s*:\s*\[\s*\{\s*"url"\s*:\s*"([^"]+)"/)
+  if (prefer && isRealMp4(norm(prefer[1]))) {
+    videoUrl = norm(prefer[1])
+  }
+
+  // 保底：扫描页面所有 mp4，选第一个非 HLS 的真 mp4
+  if (!videoUrl) {
+    const all = [...html.matchAll(/https?:[^"'\\]*?\.mp4[^"'\\]*/g)].map(m => norm(m[0]))
+    videoUrl = all.find(isRealMp4) || null
+  }
 
   const coverMatch = html.match(/"coverUrl"\s*:\s*"([^"]+)"/) ||
                      html.match(/"poster"\s*:\s*"(https?:\/\/[^"]+)"/)
   const titleMatch = html.match(/"caption"\s*:\s*"([^"]+)"/)
 
-  if (!videoMatch) throw new Error('无法解析快手视频')
+  if (!videoUrl) throw new Error('无法解析快手视频(未找到无水印mp4直链)')
 
   return {
-    videoUrl: videoMatch[1].replace(/\\u002F/g, '/'),
-    cover: coverMatch ? coverMatch[1].replace(/\\u002F/g, '/') : '',
+    videoUrl,
+    cover: coverMatch ? norm(coverMatch[1]) : '',
     title: titleMatch ? titleMatch[1] : '快手视频'
   }
 }
@@ -330,6 +347,7 @@ const PROXY_HOST_WHITELIST = [
   /(^|\.)douyinpic\.com$/,   // 抖音图集
   /(^|\.)kwaicdn\.com$/,     // 快手
   /(^|\.)kwimgs\.com$/,
+  /(^|\.)yximgs\.com$/,      // 快手 mp4 直链域名
   /(^|\.)gifshow\.com$/,
   /(^|\.)xhscdn\.com$/,      // 小红书
   /(^|\.)weibocdn\.com$/,    // 微博

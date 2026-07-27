@@ -21,7 +21,7 @@ function headersFor(url) {
   const headers = { 'User-Agent': MOBILE_UA }
   if (/bilivideo\.com|bilibili/.test(url)) {
     headers.Referer = 'https://www.bilibili.com/'
-  } else if (/kuaishou|gifshow|kwaicdn|kwimgs/.test(url)) {
+  } else if (/kuaishou|gifshow|kwaicdn|kwimgs|yximgs/.test(url)) {
     headers.Referer = 'https://www.kuaishou.com/'
   } else if (/xhscdn|xiaohongshu/.test(url)) {
     headers.Referer = 'https://www.xiaohongshu.com/'
