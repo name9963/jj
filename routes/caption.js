@@ -12,6 +12,7 @@ const router = express.Router()
 const path = require('path')
 const fs = require('fs')
 const { transcribeVideo, MAX_SECONDS } = require('../utils/asrClient')
+const { extractSubtitleText } = require('../utils/subtitleOcr')
 const { downloadVideo } = require('../utils/mediaFetch')
 const { parseVideo } = require('../utils/videoParser')
 
@@ -103,7 +104,7 @@ async function processTranscribe(taskId, { link, uploadedPath }) {
       mediaPath = downloaded
     }
 
-    const text = await transcribeVideo(mediaPath)
+    const text = await extractTextAuto(mediaPath)
     tasks.set(taskId, { status: 'done', text, error: null })
     console.log(`[Caption] 识别完成: ${taskId}, 共 ${text.length} 字`)
   } catch (err) {
@@ -118,6 +119,24 @@ async function processTranscribe(taskId, { link, uploadedPath }) {
 
   // 10分钟后自动清理没被取走的任务
   setTimeout(() => tasks.delete(taskId), 10 * 60 * 1000)
+}
+
+/**
+ * 自动选择提取方式：先试硬字幕 OCR（准确率通常高于语音），
+ * 检测到稳定字幕就用 OCR 结果；否则(无字幕/OCR失败)回退到语音识别。
+ */
+async function extractTextAuto(mediaPath) {
+  try {
+    const ocr = await extractSubtitleText(mediaPath)
+    if (ocr && ocr.ok && ocr.text) {
+      console.log(`[Caption] 使用字幕OCR结果(${ocr.lines}句)`)
+      return ocr.text
+    }
+    console.log('[Caption] 未检测到稳定字幕，回退语音识别')
+  } catch (err) {
+    console.log(`[Caption] 字幕OCR异常(${err.message})，回退语音识别`)
+  }
+  return transcribeVideo(mediaPath)
 }
 
 /**
