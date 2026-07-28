@@ -144,10 +144,20 @@ async function parseDouyin(url) {
 
   const title = item.desc || '抖音视频'
 
-  // 图文作品(aweme_type=68 等)：images 非空，取第一张图返回(封面即结果图)
+  // 图文作品(aweme_type=68/2 等)：每张图从 url_list 中优先选择 JPEG，
+  // 返回完整 imageUrls，复用前端图集预览和“保存全部图片”逻辑。
   if (item.images && item.images.length > 0) {
-    const imageUrl = pickImageUrl(item.images[0].url_list)
-    return { videoUrl: imageUrl, cover: imageUrl, title, isImage: true }
+    const imageUrls = item.images
+      .map(image => pickImageUrl(image && image.url_list))
+      .filter(Boolean)
+    if (imageUrls.length === 0) throw new Error('无法获取抖音图文作品图片')
+    return {
+      videoUrl: imageUrls[0],
+      imageUrls,
+      cover: imageUrls[0],
+      title,
+      isImage: true
+    }
   }
 
   // 普通视频：获取无水印地址(playwm→play)
