@@ -40,15 +40,16 @@ RUN cmake -B build \
  && (cp build/bin/whisper-cli /out/whisper-cli || cp build/bin/main /out/whisper-cli) \
  && test -x /out/whisper-cli
 
-# whisper 模型：hf-mirror 国内镜像优先，失败回落官方源
-#   tiny=75MB base=142MB small=466MB medium=1.5GB；默认 small，普通话准确率明显优于 base，
-#   同时避免 medium 对微信云托管内存和冷启动压力过大。可在构建参数中切回 base。
-ARG WHISPER_MODEL_SIZE=small
-RUN wget -q --tries=3 --timeout=60 -O /out/ggml-model.bin \
+# whisper 模型：hf-mirror 国内镜像优先，失败回落官方源。
+# 默认 small-q5_1（官方多语言量化模型，约181MiB）：准确率接近 small，显著降低
+# 微信云托管构建下载、镜像推送、冷启动和运行内存压力。可用构建参数改成 base 或 small。
+ARG WHISPER_MODEL_SIZE=small-q5_1
+RUN wget -q --show-progress --tries=3 --timeout=60 -O /out/ggml-model.bin \
       "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-${WHISPER_MODEL_SIZE}.bin" \
- || wget -q --tries=3 --timeout=90 -O /out/ggml-model.bin \
+ || wget -q --show-progress --tries=3 --timeout=90 -O /out/ggml-model.bin \
       "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${WHISPER_MODEL_SIZE}.bin"
-RUN test "$(wc -c < /out/ggml-model.bin)" -gt 10000000
+RUN test "$(wc -c < /out/ggml-model.bin)" -gt 50000000 \
+ && echo "Whisper model ready: ${WHISPER_MODEL_SIZE}, $(du -h /out/ggml-model.bin | cut -f1)"
 
 # LaMa ONNX 修复模型：GitHub LFS 媒体域名的镜像常 403，直连优先、镜像兜底；
 # 全部失败则生成空文件占位(保证 COPY 不失败)，运行时会自动禁用并回退传统算法
