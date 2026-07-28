@@ -24,8 +24,10 @@ app.use(cors({ origin: false, methods: ['GET', 'POST', 'OPTIONS'] }))
 app.use(express.json({ limit: '256kb' }))
 app.use(express.urlencoded({ extended: true, limit: '256kb' }))
 
-// 公共 API 基础防刷：需兼容最长约 5 分钟的结果轮询，因此额度相对宽松。
-app.use('/api', createRateLimiter({ windowMs: 10 * 60 * 1000, max: 360, name: 'api' }))
+// 公共 API 基础防刷：窗口 1 分钟，避免命中后等待过久；
+// 结果轮询(/result/)不计入——单个识别/去水印任务会轮询上百次，属正常长任务流量。
+const isPolling = (req) => req.path.includes('/result/')
+app.use('/api', createRateLimiter({ windowMs: 60 * 1000, max: 150, name: 'api', skip: isPolling }))
 
 // 静态文件（上传的文件可通过URL访问）
 // 先确保目录存在：仓库/镜像里不含 uploads，multer 不会自建目录，缺失时首次上传会报错
@@ -33,8 +35,9 @@ const uploadsDir = path.join(__dirname, 'uploads')
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true })
 app.use('/uploads', express.static(uploadsDir))
 
-// 高成本任务提交单独收紧；结果轮询不走此额度，避免长任务被误拦截。
-const heavyLimiter = createRateLimiter({ windowMs: 10 * 60 * 1000, max: 20, name: 'heavy' })
+// 高成本任务提交单独收紧：窗口 1 分钟。后端另有任务级并发限制(ASR 同时只跑 1 个)兼底 CPU，
+// 故这里只防恶意刷提交；命中也只需等最多 ~60 秒。
+const heavyLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 20, name: 'heavy' })
 
 // 路由
 app.use('/api/video', videoRoutes)

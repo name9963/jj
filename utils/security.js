@@ -15,8 +15,11 @@ function securityHeaders(req, res, next) {
   next()
 }
 
-function createRateLimiter({ windowMs = 10 * 60 * 1000, max = 100, name = 'api' } = {}) {
+function createRateLimiter({ windowMs = 10 * 60 * 1000, max = 100, name = 'api', skip = null } = {}) {
   return (req, res, next) => {
+    // 某些路径(如结果轮询)不计入限流：单个长任务会高频轮询，属正常流量
+    if (typeof skip === 'function' && skip(req)) return next()
+
     const now = Date.now()
     const client = req.ip || req.socket.remoteAddress || 'unknown'
     const key = `${name}:${client}`
