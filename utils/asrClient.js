@@ -22,6 +22,9 @@ const MAX_SECONDS = Number(process.env.ASR_MAX_SECONDS || 180)
 const THREADS = String(
   Number(process.env.ASR_THREADS) || Math.max(1, Math.min(4, os.cpus().length))
 )
+const BEAM_SIZE = String(Number(process.env.ASR_BEAM_SIZE || 5))
+const AUDIO_FILTER = process.env.ASR_AUDIO_FILTER ||
+  'highpass=f=80,lowpass=f=7600,afftdn=nf=-25,loudnorm=I=-16:LRA=11:TP=-1.5'
 
 const FFMPEG_TIMEOUT_MS = 3 * 60 * 1000
 const WHISPER_TIMEOUT_MS = 12 * 60 * 1000
@@ -65,6 +68,7 @@ function extractAudio(mediaPath, wavPath) {
     '-vn',                       // 丢掉画面，只要声音
     '-ac', '1',                  // 单声道
     '-ar', '16000',              // 16kHz
+    '-af', AUDIO_FILTER,         // 过滤低频/高频噪声、轻量降噪并统一口播响度
     '-t', String(MAX_SECONDS),   // 最多取前 N 秒
     '-f', 'wav',
     wavPath
@@ -113,11 +117,13 @@ function runWhisper(wavPath, outPrefix, txtPath) {
     '-f', wavPath,
     '-l', 'zh',
     '-t', THREADS,
+    '-bs', BEAM_SIZE,
+    '-tp', '0',
     '-nt',
     '-np',
     '-otxt',
     '-of', outPrefix,
-    '--prompt', '以下是普通话的句子，请用简体中文输出。'
+    '--prompt', '以下是普通话口播内容。请使用简体中文准确转写人名、数字、网络用语和完整句子，并添加自然标点。'
   ]
 
   return run(WHISPER_BIN, args, WHISPER_TIMEOUT_MS)

@@ -41,8 +41,9 @@ RUN cmake -B build \
  && test -x /out/whisper-cli
 
 # whisper 模型：hf-mirror 国内镜像优先，失败回落官方源
-#   tiny=75MB(最快/准确度一般) base=142MB(默认) small=466MB(更准但慢且镜像大)
-ARG WHISPER_MODEL_SIZE=base
+#   tiny=75MB base=142MB small=466MB medium=1.5GB；默认 small，普通话准确率明显优于 base，
+#   同时避免 medium 对微信云托管内存和冷启动压力过大。可在构建参数中切回 base。
+ARG WHISPER_MODEL_SIZE=small
 RUN wget -q --tries=3 --timeout=60 -O /out/ggml-model.bin \
       "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-${WHISPER_MODEL_SIZE}.bin" \
  || wget -q --tries=3 --timeout=90 -O /out/ggml-model.bin \

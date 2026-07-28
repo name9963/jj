@@ -20,6 +20,10 @@ const CROP_HEIGHT_RATIO = 0.35
 // 判定"有字幕"：有效帧占比阈值 + 至少要有几条不同字幕
 const MIN_VALID_FRAME_RATIO = 0.3
 const MIN_DISTINCT_LINES = 2
+const MIN_CJK_RATIO = Number(process.env.OCR_MIN_CJK_RATIO || 0.85)
+const MAX_NOISE_RATIO = Number(process.env.OCR_MAX_NOISE_RATIO || 0.12)
+const MAX_SINGLE_CHAR_RATIO = Number(process.env.OCR_MAX_SINGLE_CHAR_RATIO || 0.25)
+const MAX_DUPLICATE_RATIO = Number(process.env.OCR_MAX_DUPLICATE_RATIO || 0.65)
 
 const FFMPEG_TIMEOUT_MS = 4 * 60 * 1000
 const TESS_TIMEOUT_MS = 20 * 1000
@@ -61,13 +65,16 @@ async function extractSubtitleText(videoPath) {
     // 相邻去重：同一句字幕会连续出现在多帧
     const deduped = dedupLines(ordered)
 
-    // 自动判断：有效帧太少 or 有效句子太少 → 认为没有字幕，交给语音识别
+    // 除了“识别到了字”，还必须通过可读性评分。旧逻辑只看汉字数量，
+    // 画面纹理误识别出的随机汉字也会被当成字幕，导致自动模式输出整段乱码。
     const validRatio = validFrames / frames.length
-    if (validRatio < MIN_VALID_FRAME_RATIO || deduped.length < MIN_DISTINCT_LINES) {
-      return { ok: false }
+    const quality = evaluateSubtitleQuality(deduped)
+    if (validRatio < MIN_VALID_FRAME_RATIO || deduped.length < MIN_DISTINCT_LINES || !quality.ok) {
+      console.log(`[SubtitleOCR] 结果质量不足，回退语音识别: ${JSON.stringify(quality)}`)
+      return { ok: false, quality }
     }
 
-    return { ok: true, text: deduped.join(''), lines: deduped.length }
+    return { ok: true, text: formatSubtitleText(deduped), lines: deduped.length, quality }
   } finally {
     // 清理临时帧
     try {
@@ -132,6 +139,44 @@ function cleanLines(raw) {
     })
 }
 
+function evaluateSubtitleQuality(lines) {
+  const text = lines.join('')
+  const chars = Array.from(text)
+  const cjkCount = (text.match(/[\u4e00-\u9fff]/g) || []).length
+  const usefulCount = (text.match(/[\u4e00-\u9fffA-Za-z0-9，。！？、：“”‘’；：,.!?-]/g) || []).length
+  const noiseCount = Math.max(0, chars.length - usefulCount)
+  const cjkRatio = chars.length ? cjkCount / chars.length : 0
+  const noiseRatio = chars.length ? noiseCount / chars.length : 1
+  const singleCharRatio = lines.length
+    ? lines.filter(line => (line.match(/[\u4e00-\u9fff]/g) || []).length <= 2).length / lines.length
+    : 1
+
+  const normalized = lines.map(line => line.replace(/[，。！？、：“”‘’；：,.!?\s]/g, ''))
+  const uniqueCount = new Set(normalized).size
+  const duplicateRatio = lines.length ? 1 - uniqueCount / lines.length : 1
+  const averageLineLength = lines.length ? cjkCount / lines.length : 0
+
+  const ok = text.length >= 8 &&
+    cjkRatio >= MIN_CJK_RATIO &&
+    noiseRatio <= MAX_NOISE_RATIO &&
+    singleCharRatio <= MAX_SINGLE_CHAR_RATIO &&
+    duplicateRatio <= MAX_DUPLICATE_RATIO &&
+    averageLineLength >= 3
+
+  return {
+    ok,
+    cjkRatio: Number(cjkRatio.toFixed(2)),
+    noiseRatio: Number(noiseRatio.toFixed(2)),
+    singleCharRatio: Number(singleCharRatio.toFixed(2)),
+    duplicateRatio: Number(duplicateRatio.toFixed(2)),
+    averageLineLength: Number(averageLineLength.toFixed(1))
+  }
+}
+
+function formatSubtitleText(lines) {
+  return lines.map(line => /[。！？!?]$/.test(line) ? line : `${line}。`).join('')
+}
+
 /** 相邻去重：连续帧的相同/高度相似字幕只保留一条（保留更长的那条） */
 function dedupLines(lines) {
   const out = []
@@ -191,4 +236,4 @@ function run(bin, args, timeoutMs) {
   })
 }
 
-module.exports = { extractSubtitleText }
+module.exports = { extractSubtitleText, evaluateSubtitleQuality, formatSubtitleText }
