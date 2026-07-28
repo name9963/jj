@@ -21,7 +21,12 @@ app.disable('x-powered-by')
 // 中间件
 app.use(securityHeaders)
 app.use(cors({ origin: false, methods: ['GET', 'POST', 'OPTIONS'] }))
-app.use(express.json({ limit: '256kb' }))
+// base64 上传体较大，由 /api/upload/base64 路由自带的 30mb 解析器处理，跳过全局 256kb 限额
+const jsonParser = express.json({ limit: '256kb' })
+app.use((req, res, next) => {
+  if (req.path === '/api/upload/base64') return next()
+  jsonParser(req, res, next)
+})
 app.use(express.urlencoded({ extended: true, limit: '256kb' }))
 
 // 公共 API 基础防刷：窗口 1 分钟，避免命中后等待过久；

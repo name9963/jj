@@ -64,6 +64,41 @@ router.post('/', upload.single('file'), async (req, res, next) => {
 })
 
 /**
+ * POST /api/upload/base64
+ * 供 wx.cloud.callContainer 使用（callContainer 无法做 multipart 上传）。
+ * body: { data: <base64>, ext }。大请求体由本路由自带的 30mb JSON 解析器处理（全局 256kb 已跳过此路径）。
+ */
+router.post('/base64', express.json({ limit: '30mb' }), async (req, res, next) => {
+  const { data, ext } = req.body || {}
+  if (!data || typeof data !== 'string') {
+    return res.json({ code: -1, msg: '未收到文件数据', data: null })
+  }
+
+  const buf = Buffer.from(data, 'base64')
+  if (!buf.length || buf.length > 20 * 1024 * 1024) {
+    return res.json({ code: -1, msg: '文件为空或超过 20MB', data: null })
+  }
+
+  const safeExt = /^[a-zA-Z0-9]{1,5}$/.test(ext || '') ? String(ext).toLowerCase() : 'png'
+  const filename = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${safeExt}`
+  const uploadsDir = path.join(__dirname, '..', 'uploads')
+  const filePath = path.join(uploadsDir, filename)
+
+  try {
+    if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true })
+    fs.writeFileSync(filePath, buf)
+    // 复用真实文件内容校验（originalname 带真实扩展名，供其判断图片/视频）
+    await validateUploadedFile({ path: filePath, mimetype: '', originalname: filename })
+
+    console.log(`[Upload] base64 上传成功: /uploads/${filename}`)
+    res.json({ code: 0, msg: 'success', data: { url: `/uploads/${filename}`, filename, size: buf.length } })
+  } catch (err) {
+    fs.unlink(filePath, () => {})
+    next(err)
+  }
+})
+
+/**
  * 校验真实文件内容，而不是只相信客户端给出的扩展名/MIME。
  * 图片由 sharp 解码并限制总像素；视频检查常见容器文件头，详细可播放性再由 ffmpeg 校验。
  */
