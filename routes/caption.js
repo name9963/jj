@@ -13,6 +13,7 @@ const path = require('path')
 const fs = require('fs')
 const { transcribeVideo, MAX_SECONDS } = require('../utils/asrClient')
 const { extractSubtitleText } = require('../utils/subtitleOcr')
+const { transcribeByParaformer, isParaformerEnabled } = require('../utils/paraformerClient')
 const { downloadVideo } = require('../utils/mediaFetch')
 const { parseVideo } = require('../utils/videoParser')
 
@@ -137,7 +138,7 @@ async function processTranscribe(taskId, { link, uploadedPath, mode }) {
  */
 async function extractText(mediaPath, mode) {
   if (mode === 'speech') {
-    return transcribeVideo(mediaPath)
+    return speechToText(mediaPath)
   }
 
   if (mode === 'subtitle') {
@@ -159,6 +160,23 @@ async function extractText(mediaPath, mode) {
     console.log('[Caption] 自动模式→未检测到稳定字幕，回退语音识别')
   } catch (err) {
     console.log(`[Caption] 自动模式→字幕OCR异常(${err.message})，回退语音识别`)
+  }
+  return speechToText(mediaPath)
+}
+
+/**
+ * 语音转文字：优先用阿里云 Paraformer(中文准确率高)，
+ * 未配置 KEY 或调用失败时自动回退本地 whisper，保证功能不断。
+ */
+async function speechToText(mediaPath) {
+  if (isParaformerEnabled()) {
+    try {
+      const text = await transcribeByParaformer(mediaPath)
+      console.log('[Caption] 使用 Paraformer 云端识别')
+      return text
+    } catch (err) {
+      console.log(`[Caption] Paraformer 失败(${err.message})，回退本地 whisper`)
+    }
   }
   return transcribeVideo(mediaPath)
 }
