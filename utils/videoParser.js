@@ -61,8 +61,8 @@ async function parseVideo(url) {
  * 从分享文本中提取URL
  */
 function extractUrl(text) {
-  const match = text.match(/https?:\/\/[^\s<>"']+/)
-  return match ? match[0] : null
+  const match = String(text || '').match(/https?:\/\/[A-Za-z0-9._~:/?#\[\]@!$&()*+,;=%-]+/)
+  return match ? match[0].replace(/[),.;!?]+$/g, '') : null
 }
 
 function hostMatches(hostname, allowedDomains) {
