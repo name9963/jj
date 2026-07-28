@@ -15,12 +15,13 @@ const { transcribeVideo, MAX_SECONDS } = require('../utils/asrClient')
 const { extractSubtitleText } = require('../utils/subtitleOcr')
 const { downloadVideo } = require('../utils/mediaFetch')
 const { parseVideo } = require('../utils/videoParser')
+const { setTask, getTask } = require('../utils/taskStore')
 
 // uploads 目录绝对路径，用于路径穿越校验
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads')
 
-// 任务存储（内存中，单实例足够）
-const tasks = new Map()
+// 任务状态写入 CloudBase 数据库，所有云托管实例和版本共享。
+// 不能使用进程内 Map：提交和轮询可能被网关分发到不同实例，实例重启也会清空内存。
 
 // 语音识别很吃 CPU，限制并发，超出直接让用户稍后再试
 let running = 0
@@ -28,7 +29,7 @@ const MAX_RUNNING = Number(process.env.ASR_MAX_CONCURRENCY || 1)
 
 // POST /api/caption/extract
 // body: { link } 或 { videoUrl }
-router.post('/extract', (req, res) => {
+router.post('/extract', async (req, res) => {
   const { link, videoUrl, recognizeMode } = req.body || {}
 
   if (!link && !videoUrl) {
@@ -58,7 +59,12 @@ router.post('/extract', (req, res) => {
   }
 
   const taskId = `cap_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-  tasks.set(taskId, { status: 'processing', text: null, error: null })
+  try {
+    await setTask(taskId, { type: 'caption', status: 'processing', text: null, error: null })
+  } catch (err) {
+    console.error(`[Caption] 创建持久化任务失败: ${err.message}`)
+    return res.status(503).json({ code: -1, msg: '任务服务暂时不可用，请稍后重试', data: null })
+  }
 
   console.log(`[Caption] 口播识别任务创建: ${taskId}, 来源: ${link ? '链接 ' + link.slice(0, 60) : videoUrl}`)
 
@@ -71,12 +77,18 @@ router.post('/extract', (req, res) => {
 
 // GET /api/caption/result/:taskId
 // 轮询任务结果
-router.get('/result/:taskId', (req, res) => {
+router.get('/result/:taskId', async (req, res) => {
   const { taskId } = req.params
-  const task = tasks.get(taskId)
+  let task
+  try {
+    task = await getTask(taskId)
+  } catch (err) {
+    console.error(`[Caption] 读取持久化任务失败: ${err.message}`)
+    return res.status(503).json({ code: -1, msg: '任务服务暂时不可用，请稍后重试', data: null })
+  }
 
   if (!task) {
-    return res.json({ code: -1, msg: '任务不存在或已过期', data: null })
+    return res.json({ code: -1, msg: '任务记录不存在，请重新提交识别', data: null })
   }
 
   if (task.status === 'processing') {
@@ -112,20 +124,21 @@ async function processTranscribe(taskId, { link, uploadedPath, mode }) {
     }
 
     const text = await extractText(mediaPath, mode)
-    tasks.set(taskId, { status: 'done', text, error: null })
+    await setTask(taskId, { type: 'caption', status: 'done', text, error: null })
     console.log(`[Caption] 识别完成: ${taskId}, 共 ${text.length} 字`)
   } catch (err) {
     console.error(`[Caption] 识别失败: ${taskId}, ${err.message}`)
-    tasks.set(taskId, { status: 'failed', text: null, error: err.message })
+    try {
+      await setTask(taskId, { type: 'caption', status: 'failed', text: null, error: err.message })
+    } catch (storeErr) {
+      console.error(`[Caption] 保存失败状态异常: ${storeErr.message}`)
+    }
   } finally {
     running--
     // 清理临时文件：服务端下载的视频、以及小程序上传的视频都不再需要
     if (downloaded) fs.unlink(downloaded, () => {})
     if (uploadedPath) fs.unlink(uploadedPath, () => {})
   }
-
-  // 10分钟后自动清理没被取走的任务
-  setTimeout(() => tasks.delete(taskId), 10 * 60 * 1000)
 }
 
 /**
