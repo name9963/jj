@@ -180,7 +180,42 @@ async function parseKuaishou(url) {
 
   const html = res.data
 
-  // 真 mp4 直链不含 hls-ts/m3u8；优先 photoUrl / srcNoMark / mainMvUrls
+  // 当前分享页的结构化数据统一放在 INIT_STATE 中。优先按作品对象读取，
+  // 这样可以区分视频、单图和图集，避免把图集误报成“未找到 mp4”。
+  const stateMatch = html.match(/window\.INIT_STATE\s*=\s*(\{.*?\})\s*<\/script>/s)
+  let photoData = null
+  if (stateMatch) {
+    try {
+      photoData = findKuaishouPhoto(JSON.parse(stateMatch[1]))
+    } catch {
+      photoData = null
+    }
+  }
+  if (photoData && photoData.photo) {
+    const photo = photoData.photo
+    const title = photo.caption || '快手作品'
+    const mainVideo = (photo.mainMvUrls || []).map(item => item && item.url).find(Boolean)
+    if (mainVideo) {
+      return {
+        videoUrl: mainVideo,
+        cover: pickKuaishouUrl(photo.coverUrls),
+        title
+      }
+    }
+
+    if (photo.singlePicture && photoData.atlas) {
+      const imageUrl = buildKuaishouAtlasImage(photoData.atlas)
+      if (!imageUrl) throw new Error('无法获取快手图文作品图片')
+      return {
+        videoUrl: imageUrl,
+        cover: imageUrl,
+        title,
+        isImage: true
+      }
+    }
+  }
+
+  // 兼容旧分享页：真 mp4 直链不含 hls-ts/m3u8；优先 photoUrl / srcNoMark / mainMvUrls
   const isRealMp4 = (u) => u && /\.mp4/i.test(u) && !/hls|m3u8/i.test(u)
   const norm = (u) => u.replace(/\\u002F/g, '/').replace(/\\\//g, '/')
 
@@ -209,6 +244,35 @@ async function parseKuaishou(url) {
     cover: coverMatch ? norm(coverMatch[1]) : '',
     title: titleMatch ? titleMatch[1] : '快手视频'
   }
+}
+
+function findKuaishouPhoto(value) {
+  if (!value || typeof value !== 'object') return null
+  if (value.photo && typeof value.photo === 'object') return value
+
+  const children = Array.isArray(value) ? value : Object.values(value)
+  for (const child of children) {
+    const found = findKuaishouPhoto(child)
+    if (found) return found
+  }
+  return null
+}
+
+function pickKuaishouUrl(items) {
+  if (!Array.isArray(items)) return ''
+  const item = items.find(entry => entry && entry.url)
+  return item ? item.url : ''
+}
+
+function buildKuaishouAtlasImage(atlas) {
+  const paths = Array.isArray(atlas.list) ? atlas.list : []
+  const cdns = Array.isArray(atlas.cdnList) ? atlas.cdnList : []
+  const path = paths.find(item => typeof item === 'string' && /\.(?:jpe?g|png|webp)(?:\?|$)/i.test(item))
+  if (!path) return ''
+  if (/^https?:\/\//i.test(path)) return path
+
+  const cdn = cdns.map(item => typeof item === 'string' ? item : item && item.cdn).find(Boolean)
+  return cdn ? `https://${cdn}${path.startsWith('/') ? '' : '/'}${path}` : ''
 }
 
 /**
