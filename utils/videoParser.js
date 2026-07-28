@@ -31,7 +31,7 @@ async function parseVideo(url) {
   let result
   if (hostMatches(host, ['douyin.com', 'iesdouyin.com'])) {
     result = await parseDouyin(cleanUrl)
-  } else if (hostMatches(host, ['kuaishou.com', 'gifshow.com'])) {
+  } else if (hostMatches(host, ['kuaishou.com', 'gifshow.com', 'chenzhongtech.com'])) {
     result = await parseKuaishou(cleanUrl)
   } else if (hostMatches(host, ['xiaohongshu.com', 'xhslink.com', 'xhslink.cn'])) {
     result = await parseXiaohongshu(cleanUrl)
@@ -170,7 +170,7 @@ function pickImageUrl(urlList) {
 async function parseKuaishou(url) {
   const realUrl = assertAllowedRedirect(
     await getRedirectUrl(url),
-    ['kuaishou.com', 'gifshow.com'],
+    ['kuaishou.com', 'gifshow.com', 'chenzhongtech.com'],
     '快手'
   )
 
