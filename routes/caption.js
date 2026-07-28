@@ -12,7 +12,6 @@ const router = express.Router()
 const path = require('path')
 const fs = require('fs')
 const { transcribeVideo, MAX_SECONDS } = require('../utils/asrClient')
-const { extractSubtitleText } = require('../utils/subtitleOcr')
 const { transcribeByParaformer, isParaformerEnabled } = require('../utils/paraformerClient')
 const { downloadVideo } = require('../utils/mediaFetch')
 const { parseVideo } = require('../utils/videoParser')
@@ -31,7 +30,7 @@ const MAX_RUNNING = Number(process.env.ASR_MAX_CONCURRENCY || 1)
 // POST /api/caption/extract
 // body: { link } 或 { videoUrl }
 router.post('/extract', (req, res) => {
-  const { link, videoUrl, recognizeMode } = req.body || {}
+  const { link, videoUrl } = req.body || {}
 
   if (!link && !videoUrl) {
     return res.json({ code: -1, msg: '请提供视频链接或先上传视频', data: null })
@@ -43,9 +42,6 @@ router.post('/extract', (req, res) => {
   if (running >= MAX_RUNNING) {
     return res.json({ code: -1, msg: '当前识别任务较多，请稍后再试', data: null })
   }
-
-  // 识别方式：auto(默认) | subtitle 字幕OCR | speech 语音识别
-  const mode = ['auto', 'subtitle', 'speech'].includes(recognizeMode) ? recognizeMode : 'auto'
 
   // 本地上传的视频：先校验文件确实存在
   let uploadedPath = null
@@ -67,8 +63,8 @@ router.post('/extract', (req, res) => {
   // 立即返回 taskId
   res.json({ code: 0, msg: 'success', data: { taskId, maxSeconds: MAX_SECONDS } })
 
-  // 后台异步处理
-  processTranscribe(taskId, { link, uploadedPath, mode })
+  // 后台异步处理（只做语音识别：Paraformer 优先，whisper 兜底）
+  processTranscribe(taskId, { link, uploadedPath })
 })
 
 // GET /api/caption/result/:taskId
@@ -95,7 +91,7 @@ router.get('/result/:taskId', (req, res) => {
 })
 
 // 异步处理：链接来源要先解析+下载，本地来源直接识别
-async function processTranscribe(taskId, { link, uploadedPath, mode }) {
+async function processTranscribe(taskId, { link, uploadedPath }) {
   running++
   let mediaPath = uploadedPath
   let downloaded = null
@@ -113,7 +109,7 @@ async function processTranscribe(taskId, { link, uploadedPath, mode }) {
       mediaPath = downloaded
     }
 
-    const text = await extractText(mediaPath, mode)
+    const text = await speechToText(mediaPath)
     tasks.set(taskId, { status: 'done', text, error: null })
     console.log(`[Caption] 识别完成: ${taskId}, 共 ${text.length} 字`)
   } catch (err) {
@@ -128,40 +124,6 @@ async function processTranscribe(taskId, { link, uploadedPath, mode }) {
 
   // 10分钟后自动清理没被取走的任务
   setTimeout(() => tasks.delete(taskId), 10 * 60 * 1000)
-}
-
-/**
- * 根据用户选择的识别方式提取文案：
- *  - speech：只用语音识别
- *  - subtitle：只用字幕 OCR；未识别到字幕则报错提示换语音模式(不静默回退，尊重用户选择)
- *  - auto(默认)：先试字幕 OCR，检测到稳定字幕就用，否则回退语音识别
- */
-async function extractText(mediaPath, mode) {
-  if (mode === 'speech') {
-    return speechToText(mediaPath)
-  }
-
-  if (mode === 'subtitle') {
-    const ocr = await extractSubtitleText(mediaPath)
-    if (ocr && ocr.ok && ocr.text) {
-      console.log(`[Caption] 字幕OCR结果(${ocr.lines}句)`)
-      return ocr.text
-    }
-    throw new Error('未在画面中识别到字幕，请改用“语音识别”或“自动”模式重试')
-  }
-
-  // auto：字幕优先，无字幕回退语音
-  try {
-    const ocr = await extractSubtitleText(mediaPath)
-    if (ocr && ocr.ok && ocr.text) {
-      console.log(`[Caption] 自动模式→使用字幕OCR结果(${ocr.lines}句)`)
-      return ocr.text
-    }
-    console.log('[Caption] 自动模式→未检测到稳定字幕，回退语音识别')
-  } catch (err) {
-    console.log(`[Caption] 自动模式→字幕OCR异常(${err.message})，回退语音识别`)
-  }
-  return speechToText(mediaPath)
 }
 
 /**
