@@ -51,7 +51,19 @@ async function parseVideo(url) {
   // wx.downloadFile 只能访问白名单域名，各平台 CDN 域名无法穷举加白，
   // 且部分 CDN 校验 Referer；前端对相对路径会自动拼后端域名，
   // 只需把后端域名加入 downloadFile 合法域名即可保存到相册。
-  if (result && result.videoUrl && /^https?:\/\//i.test(result.videoUrl)) {
+  // 统一图文结果结构：单图也按 imageUrls 数组返回，前端可复用同一套预览/保存逻辑。
+  if (result && result.isImage && (!Array.isArray(result.imageUrls) || result.imageUrls.length === 0)) {
+    result.imageUrls = result.videoUrl ? [result.videoUrl] : []
+  }
+
+  // 图文作品返回多张图片时，每张都走服务器代理；前端只需配置后端一个下载域名。
+  if (result && Array.isArray(result.imageUrls) && result.imageUrls.length > 0) {
+    result.imageUrls = result.imageUrls.map(url => /^https?:\/\//i.test(url)
+      ? `/api/video/proxy?url=${encodeURIComponent(url)}`
+      : url)
+    result.videoUrl = result.imageUrls[0]
+    result.cover = result.imageUrls[0]
+  } else if (result && result.videoUrl && /^https?:\/\//i.test(result.videoUrl)) {
     result.videoUrl = `/api/video/proxy?url=${encodeURIComponent(result.videoUrl)}`
   }
   return result
@@ -204,11 +216,12 @@ async function parseKuaishou(url) {
     }
 
     if (photo.singlePicture && photoData.atlas) {
-      const imageUrl = buildKuaishouAtlasImage(photoData.atlas)
-      if (!imageUrl) throw new Error('无法获取快手图文作品图片')
+      const imageUrls = buildKuaishouAtlasImages(photoData.atlas)
+      if (imageUrls.length === 0) throw new Error('无法获取快手图文作品图片')
       return {
-        videoUrl: imageUrl,
-        cover: imageUrl,
+        videoUrl: imageUrls[0],
+        imageUrls,
+        cover: imageUrls[0],
         title,
         isImage: true
       }
@@ -264,15 +277,18 @@ function pickKuaishouUrl(items) {
   return item ? item.url : ''
 }
 
-function buildKuaishouAtlasImage(atlas) {
+function buildKuaishouAtlasImages(atlas) {
   const paths = Array.isArray(atlas.list) ? atlas.list : []
   const cdns = Array.isArray(atlas.cdnList) ? atlas.cdnList : []
-  const path = paths.find(item => typeof item === 'string' && /\.(?:jpe?g|png|webp)(?:\?|$)/i.test(item))
-  if (!path) return ''
-  if (/^https?:\/\//i.test(path)) return path
-
   const cdn = cdns.map(item => typeof item === 'string' ? item : item && item.cdn).find(Boolean)
-  return cdn ? `https://${cdn}${path.startsWith('/') ? '' : '/'}${path}` : ''
+
+  return paths
+    .filter(item => typeof item === 'string' && /\.(?:jpe?g|png|webp)(?:\?|$)/i.test(item))
+    .map(path => {
+      if (/^https?:\/\//i.test(path)) return path
+      return cdn ? `https://${cdn}${path.startsWith('/') ? '' : '/'}${path}` : ''
+    })
+    .filter(Boolean)
 }
 
 /**
