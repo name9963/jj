@@ -41,9 +41,15 @@ router.get('/proxy', async (req, res) => {
   }
 
   try {
+    // 透传客户端 Range 头，支持视频拖动/分段下载，避免每次都全量回源、省出口流量
+    const upstreamHeaders = headersFor(targetUrl)
+    if (req.headers.range) {
+      upstreamHeaders.Range = req.headers.range
+    }
+
     const upstream = await axios.get(targetUrl, {
       responseType: 'stream',
-      headers: headersFor(targetUrl),
+      headers: upstreamHeaders,
       timeout: 30000,
       maxRedirects: 5,
       beforeRedirect: (options) => {
@@ -55,13 +61,20 @@ router.get('/proxy', async (req, res) => {
       }
     })
 
+    // 原样回传上游状态码(200 或 206 部分内容)及分段相关响应头
+    res.status(upstream.status)
     res.setHeader('Content-Type', upstream.headers['content-type'] || 'video/mp4')
+    res.setHeader('Accept-Ranges', upstream.headers['accept-ranges'] || 'bytes')
     if (upstream.headers['content-length']) {
       res.setHeader('Content-Length', upstream.headers['content-length'])
     }
+    if (upstream.headers['content-range']) {
+      res.setHeader('Content-Range', upstream.headers['content-range'])
+    }
     upstream.data.pipe(res)
     upstream.data.on('error', () => { if (!res.headersSent) res.status(502).end() })
-    req.on('close', () => upstream.data.destroy())
+    // 仅当响应未正常结束(客户端中断)时才销毁上游，避免过早切断正常下载
+    res.on('close', () => { if (!res.writableFinished) upstream.data.destroy() })
   } catch (err) {
     console.error(`[Video] 代理转发失败: ${err.message}`)
     if (!res.headersSent) {
