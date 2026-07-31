@@ -15,6 +15,7 @@ const { transcribeVideo, MAX_SECONDS } = require('../utils/asrClient')
 const { transcribeByParaformer, isParaformerEnabled } = require('../utils/paraformerClient')
 const { downloadVideo } = require('../utils/mediaFetch')
 const { parseVideo } = require('../utils/videoParser')
+const { isCloudFileID, downloadCloudFile } = require('../utils/cloudStorage')
 
 // uploads 目录绝对路径，用于路径穿越校验
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads')
@@ -43,28 +44,33 @@ router.post('/extract', (req, res) => {
     return res.json({ code: -1, msg: '当前识别任务较多，请稍后再试', data: null })
   }
 
-  // 本地上传的视频：先校验文件确实存在
+  // 本地上传的视频：云存储 fileID(cloud://，B+) 或 /uploads 路径(旧方案)
   let uploadedPath = null
+  let cloudVideoId = null
   if (!link) {
-    uploadedPath = urlToLocalPath(videoUrl)
-    if (!uploadedPath) {
-      return res.json({ code: -1, msg: '非法的文件路径', data: null })
-    }
-    if (!fs.existsSync(uploadedPath)) {
-      return res.json({ code: -1, msg: '视频文件不存在，请重新上传', data: null })
+    if (isCloudFileID(videoUrl)) {
+      cloudVideoId = videoUrl
+    } else {
+      uploadedPath = urlToLocalPath(videoUrl)
+      if (!uploadedPath) {
+        return res.json({ code: -1, msg: '非法的文件路径', data: null })
+      }
+      if (!fs.existsSync(uploadedPath)) {
+        return res.json({ code: -1, msg: '视频文件不存在，请重新上传', data: null })
+      }
     }
   }
 
   const taskId = `cap_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   tasks.set(taskId, { status: 'processing', text: null, error: null })
 
-  console.log(`[Caption] 口播识别任务创建: ${taskId}, 来源: ${link ? '链接 ' + link.slice(0, 60) : videoUrl}`)
+  console.log(`[Caption] 口播识别任务创建: ${taskId}, 来源: ${link ? '链接 ' + link.slice(0, 60) : (cloudVideoId ? '云存储视频' : videoUrl)}`)
 
   // 立即返回 taskId
   res.json({ code: 0, msg: 'success', data: { taskId, maxSeconds: MAX_SECONDS } })
 
-  // 后台异步处理（只做语音识别：Paraformer 优先，whisper 兜底）
-  processTranscribe(taskId, { link, uploadedPath })
+  // 后台异步处理（只做语音识别：Paraformer 优先，whisper 兑底）
+  processTranscribe(taskId, { link, uploadedPath, cloudVideoId })
 })
 
 // GET /api/caption/result/:taskId
@@ -90,8 +96,8 @@ router.get('/result/:taskId', (req, res) => {
   res.json({ code: 0, msg: 'failed', data: { status: 'failed', error: task.error || '识别失败' } })
 })
 
-// 异步处理：链接来源要先解析+下载，本地来源直接识别
-async function processTranscribe(taskId, { link, uploadedPath }) {
+// 异步处理：链接来源要先解析+下载，云存储来源先下载，本地来源直接识别
+async function processTranscribe(taskId, { link, uploadedPath, cloudVideoId }) {
   running++
   let mediaPath = uploadedPath
   let downloaded = null
@@ -106,6 +112,10 @@ async function processTranscribe(taskId, { link, uploadedPath }) {
         throw new Error('没能拿到视频地址，请确认链接是否有效')
       }
       downloaded = await downloadVideo(parsed.videoUrl)
+      mediaPath = downloaded
+    } else if (cloudVideoId) {
+      // 云存储上传的视频：先下载到本地
+      downloaded = await downloadCloudFile(cloudVideoId)
       mediaPath = downloaded
     }
 
