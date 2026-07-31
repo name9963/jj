@@ -69,12 +69,11 @@ FROM node:22-bookworm-slim
 
 WORKDIR /app
 
-# ffmpeg 抽音轨/抽帧；tesseract + 简体中文语言包用于硬字幕 OCR
+# ffmpeg 用于抽音轨/转码（语音识别预处理）
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ffmpeg ca-certificates tesseract-ocr tesseract-ocr-chi-sim \
+      ffmpeg ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
- && ffmpeg -version >/dev/null \
- && tesseract --version >/dev/null
+ && ffmpeg -version >/dev/null
 
 COPY --from=builder /out/whisper-cli /usr/local/bin/whisper-cli
 
