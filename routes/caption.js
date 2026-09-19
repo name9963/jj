@@ -44,6 +44,10 @@ router.post('/extract', (req, res, next) => {
         if (isParaformerEnabled()) {
           try { text = await transcribeByParaformer(mediaPath, signal) } catch (err) {
             signal.throwIfAborted()
+            // 未配 KEY、KEY 无效、PUBLIC_BASE_URL 不可达（百炼要回源拉音频）、额度不足都会走到这里。
+            // 没有这行日志时，线上完全看不出云端识别有没有生效，
+            // 只表现为"识别很慢且质量差"，无法定位是 KEY 问题还是回源地址问题。
+            console.warn(`[Caption] 百炼识别未生效，回退本地 whisper: ${err.message}`)
           }
         }
         if (!text) text = await transcribeVideo(mediaPath, signal)
