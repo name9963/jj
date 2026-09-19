@@ -6,6 +6,8 @@ const axios = require('axios')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const { pipeline } = require('stream/promises')
+const { Transform } = require('stream')
 
 // 单个视频最大下载体积，超过直接中断（口播识别只用前几分钟，不需要完整大文件）
 const MAX_BYTES = Number(process.env.ASR_MAX_DOWNLOAD_MB || 200) * 1024 * 1024
@@ -39,67 +41,62 @@ function headersFor(url) {
  *                            会自动拼上本机地址，复用服务端已有的带 Referer 转发逻辑。
  * @returns {Promise<string>} 本地文件路径（调用方负责删除）
  */
-async function downloadVideo(videoUrl) {
+async function downloadVideo(videoUrl, signal) {
   let url = videoUrl
   if (!/^https?:\/\//i.test(url)) {
-    const port = process.env.PORT || 3000
-    url = `http://127.0.0.1:${port}${url.startsWith('/') ? '' : '/'}${url}`
+    const parsed = new URL(url, 'http://local')
+    if (parsed.pathname !== '/api/video/proxy') throw new Error('非法的视频地址')
+    url = parsed.searchParams.get('url')
   }
+  const { isAllowedProxyTarget } = require('./videoParser')
+  if (!isAllowedProxyTarget(url)) throw new Error('视频下载地址不受支持')
 
   const destPath = path.join(
-    os.tmpdir(),
+    require('./runtimePaths').workDir,
     `src_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.mp4`
   )
 
-  let response
-  try {
-    response = await axios.get(url, {
-      responseType: 'stream',
-      headers: headersFor(videoUrl),
-      timeout: DOWNLOAD_TIMEOUT_MS,
-      maxRedirects: 5
-    })
-  } catch (err) {
-    throw new Error(`视频下载失败（链接可能已过期，请重新提交）：${err.message}`)
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  if (signal) {
+    if (signal.aborted) signal.throwIfAborted()
+    signal.addEventListener('abort', abort, { once: true })
   }
-
-  return new Promise((resolve, reject) => {
-    const writer = fs.createWriteStream(destPath)
-    let bytes = 0
-    let aborted = false
-
-    const fail = (err) => {
-      if (aborted) return
-      aborted = true
-      response.data.destroy()
-      writer.destroy()
-      fs.unlink(destPath, () => {})
-      reject(err)
-    }
-
-    response.data.on('data', (chunk) => {
-      bytes += chunk.length
-      if (bytes > MAX_BYTES) {
-        fail(new Error('视频体积过大，暂不支持识别，请换个短一点的视频'))
+  const timer = setTimeout(abort, DOWNLOAD_TIMEOUT_MS)
+  timer.unref()
+  let bytes = 0
+  try {
+    const response = await axios.get(url, {
+      signal: controller.signal,
+      responseType: 'stream',
+      headers: headersFor(url),
+      timeout: DOWNLOAD_TIMEOUT_MS,
+      maxRedirects: 5,
+      beforeRedirect: options => {
+        if (!isAllowedProxyTarget(`${options.protocol}//${options.hostname}${options.port ? ':' + options.port : ''}${options.path || '/'}`)) {
+          throw new Error('视频重定向到了非白名单地址')
+        }
       }
     })
-
-    response.data.on('error', () => fail(new Error('视频下载中断，链接可能已过期，请重新提交')))
-    writer.on('error', () => fail(new Error('视频写入失败，请稍后重试')))
-
-    writer.on('finish', () => {
-      if (aborted) return
-      if (bytes < 1024) {
-        fs.unlink(destPath, () => {})
-        reject(new Error('下载到的内容异常（文件过小），链接可能已失效'))
-        return
+    const limit = new Transform({
+      transform(chunk, encoding, callback) {
+        bytes += chunk.length
+        callback(bytes > MAX_BYTES ? new Error('视频体积过大，请换个短一点的视频') : null, chunk)
       }
-      console.log(`[MediaFetch] 视频下载完成: ${(bytes / 1024 / 1024).toFixed(1)}MB`)
-      resolve(destPath)
     })
-
-    response.data.pipe(writer)
-  })
+    await pipeline(response.data, limit, fs.createWriteStream(destPath), { signal: controller.signal })
+    if (bytes < 1024) throw new Error('下载到的内容异常，链接可能已失效')
+    return destPath
+  } catch (err) {
+    // pipeline 已关闭文件句柄，Windows 上也能可靠清理失败下载。
+    await fs.promises.unlink(destPath).catch(failure => {
+      if (failure.code !== 'ENOENT') console.error('[MediaFetch] 清理失败:', failure.code)
+    })
+    throw new Error(controller.signal.aborted ? '视频下载超时或已取消' : `视频下载失败：${err.message}`)
+  } finally {
+    clearTimeout(timer)
+    if (signal) signal.removeEventListener('abort', abort)
+  }
 }
 
 module.exports = { downloadVideo, headersFor }

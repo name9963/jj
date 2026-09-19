@@ -10,6 +10,8 @@ const uploadRoutes = require('./routes/upload')
 const captionRoutes = require('./routes/caption')
 const { startUploadsCleaner } = require('./utils/uploadsCleaner')
 const { securityHeaders, createRateLimiter } = require('./utils/security')
+const { createSession, requireSession } = require('./utils/session')
+const resources = require('./utils/resources')
 
 const app = express()
 const PORT = process.env.PORT || 3000
@@ -29,11 +31,13 @@ app.use(express.urlencoded({ extended: true, limit: '256kb' }))
 const isPolling = (req) => req.path.includes('/result/')
 app.use('/api', createRateLimiter({ windowMs: 60 * 1000, max: 150, name: 'api', skip: isPolling }))
 
-// 静态文件（上传的文件可通过URL访问）
+// 运行时目录：原始上传不通过静态路由公开，只能通过资源归属校验或限时签名地址访问。
 // 先确保目录存在：仓库/镜像里不含 uploads，multer 不会自建目录，缺失时首次上传会报错
-const uploadsDir = path.join(__dirname, 'uploads')
+const uploadsDir = require('./utils/runtimePaths').uploadsDir
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true })
-app.use('/uploads', express.static(uploadsDir))
+// 原始上传永不公开；预览/第三方回源使用限时签名地址。
+app.get('/api/files/:id', resources.serve)
+app.post('/api/session', createRateLimiter({ windowMs: 60000, max: 10, name: 'session' }), createSession)
 
 // 高成本任务提交单独收紧：窗口 1 分钟。后端另有任务级并发限制(ASR 同时只跑 1 个)兼底 CPU，
 // 故这里只防恶意刷提交；命中也只需等最多 ~60 秒。
@@ -41,6 +45,7 @@ const heavyLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 20, name: 'he
 
 // 路由
 app.use('/api/video', videoRoutes)
+app.use(['/api/upload', '/api/image', '/api/caption'], requireSession)
 app.use('/api/image/remove-watermark', heavyLimiter)
 app.use('/api/upload', heavyLimiter)
 app.use('/api/caption/extract', heavyLimiter)
@@ -59,19 +64,21 @@ app.use((req, res) => {
 })
 
 app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err)
   console.error('[Error]', err.message)
   if (err.type === 'entity.too.large') {
     return res.status(413).json({ code: -1, msg: '请求内容过大', data: null })
   }
-  const status = Number(err.statusCode)
+  const status = Number(err.statusCode || err.status)
   if (status >= 400 && status < 500) {
     return res.status(status).json({ code: -1, msg: err.message || '请求参数无效', data: null })
   }
   res.status(500).json({ code: -1, msg: '服务器内部错误', data: null })
 })
 
-app.listen(PORT, () => {
+if (require.main === module) app.listen(PORT, () => {
   console.log(`✓ 去水印服务已启动: http://localhost:${PORT}`)
   // uploads 目录定期清理：上传文件/结果图保留 24 小时，防磁盘堆满
   startUploadsCleaner()
 })
+module.exports = app

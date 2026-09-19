@@ -6,16 +6,18 @@ const multer = require('multer')
 const path = require('path')
 const fs = require('fs')
 const sharp = require('sharp')
+const crypto = require('crypto')
+const resources = require('../utils/resources')
 
 // 配置 multer 存储
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, path.join(__dirname, '..', 'uploads'))
+    cb(null, require('../utils/runtimePaths').uploadsDir)
   },
   filename: (req, file, cb) => {
     // 生成唯一文件名
-    const ext = path.extname(file.originalname) || '.png'
-    const name = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`
+    const ext = /\.(jpg|jpeg|png|gif|webp|mp4|mov|m4v)$/i.test(file.originalname) ? path.extname(file.originalname).toLowerCase() : '.bin'
+    const name = `upload_${crypto.randomUUID()}${ext}`
     cb(null, name)
   }
 })
@@ -43,16 +45,14 @@ router.post('/', upload.single('file'), async (req, res, next) => {
   }
 
   try {
-    await validateUploadedFile(req.file)
-
-    const fileUrl = `/uploads/${req.file.filename}`
-    console.log(`[Upload] 文件上传成功: ${fileUrl}`)
+    const kind = await validateUploadedFile(req.file)
+    const resource = resources.register(req.file.path, req.owner, kind)
 
     res.json({
       code: 0,
       msg: 'success',
       data: {
-        url: fileUrl,
+        url: resource.id,
         filename: req.file.filename,
         size: req.file.size
       }
@@ -91,7 +91,7 @@ async function validateUploadedFile(file) {
       err.statusCode = 400
       throw err
     }
-    return
+    return 'image'
   }
 
   // MP4/MOV/M4V 容器通常在前 32 字节包含 ftyp 标记。
@@ -100,6 +100,7 @@ async function validateUploadedFile(file) {
     err.statusCode = 400
     throw err
   }
+  return 'video'
 }
 
 // 上传错误处理

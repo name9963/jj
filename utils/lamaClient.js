@@ -6,6 +6,7 @@ const https = require('https')
 const fs = require('fs')
 const path = require('path')
 const sharp = require('sharp')
+const crypto = require('crypto')
 
 const API_HOST = 'api.shiliuai.com'
 const API_PATH = '/api/inpaint/v1'
@@ -18,7 +19,7 @@ const API_KEY = process.env.SHILIU_API_KEY
  *   (半透明红色描边 rgba(255,80,80,0.5)，透明底 —— 与本地算法共用同一份遮罩)
  * @returns {Promise<string>} 结果图本地路径
  */
-async function inpaintByLama(imagePath, maskPath) {
+async function inpaintByLama(imagePath, maskPath, signal) {
   if (!API_KEY) {
     throw new Error('未配置 SHILIU_API_KEY 环境变量')
   }
@@ -34,6 +35,7 @@ async function inpaintByLama(imagePath, maskPath) {
 
   const body = await new Promise((resolve, reject) => {
     const req = https.request({
+      signal,
       hostname: API_HOST,
       path: API_PATH,
       method: 'POST',
@@ -45,7 +47,12 @@ async function inpaintByLama(imagePath, maskPath) {
       timeout: 55000 // 云托管网关 60s 硬超时，留 5s 余量提前失败转入本地回退
     }, (res) => {
       let data = ''
-      res.on('data', chunk => data += chunk)
+      let bytes = 0
+      res.on('data', chunk => {
+        bytes += chunk.length
+        if (bytes > 32 * 1024 * 1024) { req.destroy(new Error('图片服务返回内容过大')); return }
+        data += chunk
+      })
       res.on('end', () => resolve({ statusCode: res.statusCode, data }))
       res.on('error', reject)
     })
@@ -64,15 +71,18 @@ async function inpaintByLama(imagePath, maskPath) {
   }
 
   if (result.code !== 0 || !result.result_base64) {
-    throw new Error(result.msg_cn || result.msg || `石榴API错误(code=${result.code})`)
+    // 始终带上错误码：101=API-KEY 不正确 / 102=未知用户 / 103=积分已用完 / 4=参数错误。
+    // 只抛 msg_cn 时，日志里的"api key无效"无法区分是 KEY 填错、账号异常还是额度耗尽。
+    throw new Error(`石榴API错误(code=${result.code}): ${result.msg_cn || result.msg || '未知错误'}`)
   }
 
-  const outputDir = path.join(__dirname, '..', 'uploads')
+  const outputDir = require('./runtimePaths').uploadsDir
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true })
   }
-  const outputPath = path.join(outputDir, `result_${Date.now()}.jpg`)
-  fs.writeFileSync(outputPath, Buffer.from(result.result_base64, 'base64'))
+  const outputPath = path.join(outputDir, `result_${crypto.randomUUID()}.jpg`)
+  // 校验并重新编码第三方输出，避免将HTML/损坏数据作为成功图片返回。
+  await sharp(Buffer.from(result.result_base64, 'base64'), { limitInputPixels: 40_000_000 }).jpeg({ quality: 95 }).toFile(outputPath)
 
   return outputPath
 }

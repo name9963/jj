@@ -34,9 +34,9 @@ const WHISPER_TIMEOUT_MS = 12 * 60 * 1000
  * @param {string} mediaPath - 服务器本地文件路径（mp4/mov/m4a/mp3 等 ffmpeg 能读的格式）
  * @returns {Promise<string>}
  */
-async function transcribeVideo(mediaPath) {
+async function transcribeVideo(mediaPath, signal) {
   const wavPath = path.join(
-    os.tmpdir(),
+    require('./runtimePaths').workDir,
     `asr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.wav`
   )
 
@@ -45,8 +45,8 @@ async function transcribeVideo(mediaPath) {
   const txtPath = `${outPrefix}.txt`
 
   try {
-    await extractAudio(mediaPath, wavPath)
-    const text = await runWhisper(wavPath, outPrefix, txtPath)
+    await extractAudio(mediaPath, wavPath, signal)
+    const text = await runWhisper(wavPath, outPrefix, txtPath, signal)
     if (!text) {
       throw new Error('没有识别到人说话的内容，这个视频可能只有音乐或没有声音')
     }
@@ -60,7 +60,7 @@ async function transcribeVideo(mediaPath) {
 /**
  * 抽音轨：转成 whisper 要求的 16kHz 单声道 PCM WAV，并只取前 MAX_SECONDS 秒。
  */
-function extractAudio(mediaPath, wavPath) {
+function extractAudio(mediaPath, wavPath, signal) {
   const args = [
     '-y',
     '-loglevel', 'error',
@@ -74,7 +74,7 @@ function extractAudio(mediaPath, wavPath) {
     wavPath
   ]
 
-  return run(FFMPEG_BIN, args, FFMPEG_TIMEOUT_MS)
+  return run(FFMPEG_BIN, args, FFMPEG_TIMEOUT_MS, signal)
     .then(({ code, stderr }) => {
       if (code !== 0) {
         // ffmpeg 的原始报错是英文的，转成用户能看懂的话
@@ -111,7 +111,7 @@ function extractAudio(mediaPath, wavPath) {
  * -nt 不输出时间戳、-np 不打印进度日志。
  * --prompt 用一句简体中文引导，减少输出繁体字的概率。
  */
-function runWhisper(wavPath, outPrefix, txtPath) {
+function runWhisper(wavPath, outPrefix, txtPath, signal) {
   const args = [
     '-m', WHISPER_MODEL,
     '-f', wavPath,
@@ -126,7 +126,7 @@ function runWhisper(wavPath, outPrefix, txtPath) {
     '--prompt', '以下是普通话口播内容。请使用简体中文准确转写人名、数字、网络用语和完整句子，并添加自然标点。'
   ]
 
-  return run(WHISPER_BIN, args, WHISPER_TIMEOUT_MS)
+  return run(WHISPER_BIN, args, WHISPER_TIMEOUT_MS, signal)
     .then(({ code, stdout, stderr }) => {
       if (code !== 0) {
         console.error(`[ASR] whisper 退出码 ${code}: ${tail(stderr)}`)
@@ -181,9 +181,9 @@ function cleanText(raw) {
  * 统一的子进程执行封装：带超时、收集 stdout/stderr，不因非 0 退出码直接 reject
  * （由调用方按业务判断），spawn 本身失败（如找不到可执行文件）才 reject。
  */
-function run(bin, args, timeoutMs) {
+function run(bin, args, timeoutMs, signal) {
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { windowsHide: true })
+    const child = spawn(bin, args, { windowsHide: true, signal, killSignal: 'SIGKILL' })
 
     let stdout = ''
     let stderr = ''

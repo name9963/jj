@@ -8,7 +8,9 @@
   },
   "scripts": {
     "start": "node app.js",
-    "dev": "node --watch app.js"
+    "dev": "node --watch app.js",
+    "test": "node --test tests/backend.test.js",
+    "audit:prod": "npm audit --omit=dev --registry=https://registry.npmjs.org"
   },
   "dependencies": {
     "axios": "^1.6.0",
@@ -17,7 +19,9 @@
     "form-data": "^4.0.6",
     "multer": "^1.4.5-lts.1",
     "onnxruntime-node": "^1.19.2",
-    "sharp": "^0.35.3",
-    "ws": "^8.18.0"
+    "sharp": "^0.35.4"
+  },
+  "overrides": {
+    "qs": "6.16.0"
   }
 }

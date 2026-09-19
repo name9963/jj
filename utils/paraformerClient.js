@@ -14,14 +14,16 @@ const { spawn } = require('child_process')
 const fs = require('fs')
 const path = require('path')
 const axios = require('axios')
+const crypto = require('crypto')
+const resources = require('./resources')
 
 const API_KEY = process.env.DASHSCOPE_API_KEY
 const MODEL = process.env.PARAFORMER_MODEL || 'paraformer-v2'
 const PUBLIC_BASE = (process.env.PUBLIC_BASE_URL ||
-  'https://express-vyz1-286021-10-1457360213.sh.run.tcloudbase.com').replace(/\/$/, '')
+  'https://lama-inpaint-286021-10-1457360213.sh.run.tcloudbase.com').replace(/\/$/, '')
 const FFMPEG_BIN = process.env.FFMPEG_BIN || 'ffmpeg'
 const MAX_SECONDS = Number(process.env.ASR_MAX_SECONDS || 180)
-const UPLOADS_DIR = path.join(__dirname, '..', 'uploads')
+const UPLOADS_DIR = require('./runtimePaths').uploadsDir
 
 const SUBMIT_URL = 'https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription'
 const TASK_URL = 'https://dashscope.aliyuncs.com/api/v1/tasks'
@@ -40,31 +42,35 @@ function isParaformerEnabled() {
  * @param {string} mediaPath 服务器本地文件路径
  * @returns {Promise<string>}
  */
-async function transcribeByParaformer(mediaPath) {
+async function transcribeByParaformer(mediaPath, signal) {
   if (!API_KEY) throw new Error('未配置 DASHSCOPE_API_KEY')
 
   if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true })
   // 命名匹配 uploadsCleaner 的清理规则（时间戳_随机名），即使异常泄漏也会被 24h 清理兜底
-  const audioName = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}.mp3`
+  const audioName = `audio_${crypto.randomUUID()}.mp3`
   const audioPath = path.join(UPLOADS_DIR, audioName)
+  let resource
 
   try {
-    await extractAudio(mediaPath, audioPath)
-    const audioUrl = `${PUBLIC_BASE}/uploads/${audioName}`
+    await extractAudio(mediaPath, audioPath, signal)
+    resource = resources.register(audioPath, 'internal-asr', 'audio')
+    const audioUrl = PUBLIC_BASE + resources.signedUrl(resource)
 
-    const taskId = await submitTask(audioUrl)
-    const transcriptionUrls = await pollTask(taskId)
-    const text = await fetchTranscripts(transcriptionUrls)
+    const taskId = await submitTask(audioUrl, signal)
+    const transcriptionUrls = await pollTask(taskId, signal)
+    const text = await fetchTranscripts(transcriptionUrls, signal)
 
     if (!text) throw new Error('Paraformer 未返回文本')
     return text
   } finally {
-    fs.unlink(audioPath, () => {})
+    if (resource) {
+      try { resources.revoke(resource.id) } catch (err) { console.error('[ASR] 清理失败:', err.code) }
+    } else fs.unlink(audioPath, () => {})
   }
 }
 
 /** ffmpeg 抽音轨为 16kHz 单声道 mp3，只取前 MAX_SECONDS 秒（体积小、便于阿里云回源） */
-function extractAudio(mediaPath, audioPath) {
+function extractAudio(mediaPath, audioPath, signal) {
   const args = [
     '-y', '-loglevel', 'error',
     '-i', mediaPath,
@@ -73,11 +79,11 @@ function extractAudio(mediaPath, audioPath) {
     '-f', 'mp3', audioPath
   ]
   return new Promise((resolve, reject) => {
-    const child = spawn(FFMPEG_BIN, args, { windowsHide: true })
+    const child = spawn(FFMPEG_BIN, args, { windowsHide: true, signal, killSignal: 'SIGKILL' })
     let stderr = ''
     const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('抽音轨超时')) }, FFMPEG_TIMEOUT_MS)
     child.stderr.on('data', d => { stderr += d.toString() })
-    child.on('error', reject)
+    child.on('error', err => { clearTimeout(timer); reject(err) })
     child.on('close', (code) => {
       clearTimeout(timer)
       if (code !== 0) return reject(new Error(`ffmpeg 抽音轨失败: ${stderr.slice(-200)}`))
@@ -89,7 +95,7 @@ function extractAudio(mediaPath, audioPath) {
 }
 
 /** 提交异步识别任务，返回 task_id */
-async function submitTask(audioUrl) {
+async function submitTask(audioUrl, signal) {
   const res = await axios.post(SUBMIT_URL, {
     model: MODEL,
     input: { file_urls: [audioUrl] },
@@ -100,7 +106,8 @@ async function submitTask(audioUrl) {
       'Content-Type': 'application/json',
       'X-DashScope-Async': 'enable'
     },
-    timeout: 30000
+    timeout: 30000,
+    signal
   })
   const taskId = res.data && res.data.output && res.data.output.task_id
   if (!taskId) throw new Error('Paraformer 提交任务失败：未返回 task_id')
@@ -108,12 +115,16 @@ async function submitTask(audioUrl) {
 }
 
 /** 轮询任务直至完成，返回各分片的 transcription_url 列表 */
-async function pollTask(taskId) {
+async function pollTask(taskId, signal) {
+  const deadline = Date.now() + 4 * 60 * 1000
   for (let i = 0; i < POLL_MAX_ATTEMPTS; i++) {
+    if (signal) signal.throwIfAborted()
+    if (Date.now() >= deadline) break
     await sleep(POLL_INTERVAL_MS)
     const res = await axios.get(`${TASK_URL}/${taskId}`, {
       headers: { Authorization: `Bearer ${API_KEY}` },
-      timeout: 30000
+      timeout: 30000,
+      signal
     })
     const output = res.data && res.data.output
     const status = output && output.task_status
@@ -134,10 +145,10 @@ async function pollTask(taskId) {
 }
 
 /** 拉取并拼接各分片转写结果的纯文本 */
-async function fetchTranscripts(urls) {
+async function fetchTranscripts(urls, signal) {
   const parts = []
   for (const url of urls) {
-    const res = await axios.get(url, { timeout: 30000 })
+    const res = await axios.get(url, { timeout: 30000, signal, maxContentLength: 2 * 1024 * 1024 })
     const transcripts = res.data && res.data.transcripts
     if (Array.isArray(transcripts)) {
       for (const t of transcripts) {

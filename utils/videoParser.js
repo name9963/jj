@@ -1,6 +1,6 @@
 // server/utils/videoParser.js
 // 多平台视频解析模块
-const axios = require('axios')
+const axios = require('axios').create({ timeout: 15000, maxContentLength: 8 * 1024 * 1024 })
 
 // 通用请求头，模拟浏览器
 const HEADERS = {

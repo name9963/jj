@@ -52,9 +52,9 @@ async function removeWatermark(imagePath, maskPath) {
   // 5. 边界轻微羽化，消除裁剪/缩放带来的接缝
   featherBoundary(imageBuffer, hole, width, height)
 
-  const outputDir = path.join(__dirname, '..', 'uploads')
+  const outputDir = require('./runtimePaths').uploadsDir
   if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true })
-  const outputPath = path.join(outputDir, `result_${Date.now()}.png`)
+  const outputPath = path.join(outputDir, `result_${require('crypto').randomUUID()}.png`)
 
   await sharp(imageBuffer, { raw: { width, height, channels: 4 } })
     .png()

@@ -72,7 +72,10 @@ router.get('/proxy', async (req, res) => {
       res.setHeader('Content-Range', upstream.headers['content-range'])
     }
     upstream.data.pipe(res)
-    upstream.data.on('error', () => { if (!res.headersSent) res.status(502).end() })
+    upstream.data.on('error', () => {
+      if (!res.headersSent) res.status(502).end()
+      else res.destroy()
+    })
     // 仅当响应未正常结束(客户端中断)时才销毁上游，避免过早切断正常下载
     res.on('close', () => { if (!res.writableFinished) upstream.data.destroy() })
   } catch (err) {

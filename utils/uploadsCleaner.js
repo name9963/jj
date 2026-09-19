@@ -6,37 +6,58 @@
 const fs = require('fs')
 const path = require('path')
 
-const UPLOADS_DIR = path.join(__dirname, '..', 'uploads')
+const { uploadsDir: UPLOADS_DIR, workDir } = require('./runtimePaths')
 const MAX_AGE_MS = 24 * 60 * 60 * 1000 // 文件保留 24 小时
-const INTERVAL_MS = 60 * 60 * 1000     // 每小时清理一次
+const INTERVAL_MS = 60 * 1000         // 每分钟检查；到期访问由资源接口立即拒绝
 
 // multer 上传: 1784786392361_ezxn2i.png；处理结果: result_1784861515485.png
-const RUNTIME_FILE = /^(\d{13}_[a-z0-9]+|result_\d{13})\.\w+$/i
+const RUNTIME_FILE = /^(\d{13}_[a-z0-9]+|result_\d{13}|(?:upload|result|audio)_[a-f0-9-]{36})\.\w+$/i
 
 function cleanOnce() {
+  try {
+    require('./resources').cleanExpired()
+    require('./tasks').cleanExpired()
+  } catch (err) { console.error('[Cleaner] 状态清理失败，将重试:', err.code || err.name) }
+  let protectedFiles
+  try { protectedFiles = require('./resources').protectedPaths() } catch (err) { return }
   fs.readdir(UPLOADS_DIR, (err, files) => {
     if (err) return // 目录不存在等情况直接跳过，首次上传时 multer 会建目录
     const now = Date.now()
     files.forEach((name) => {
       if (!RUNTIME_FILE.test(name)) return
       const filePath = path.join(UPLOADS_DIR, name)
+      if (protectedFiles.has(filePath)) return
       fs.stat(filePath, (statErr, stat) => {
         if (statErr) return
         if (now - stat.mtimeMs > MAX_AGE_MS) {
           fs.unlink(filePath, (delErr) => {
             if (!delErr) console.log(`[Cleaner] 已清理过期文件: ${name}`)
+            else if (delErr.code !== 'ENOENT') console.error('[Cleaner] 文件删除失败，将重试:', delErr.code)
           })
         }
       })
     })
   })
+  // 工作副本均由服务创建；最长任务20分钟，24小时阈值用于清理崩溃残留。
+  fs.readdir(workDir, (err, files) => {
+    if (err) return
+    for (const name of files) {
+      if (!/^(caption_[a-f0-9-]{36}|(?:src|asr)_\d{13}_[a-z0-9]+)\.(mp4|wav|txt)$/.test(name)) continue
+      const file = path.join(workDir, name)
+      fs.stat(file, (error, stat) => {
+        if (!error && Date.now() - stat.mtimeMs > MAX_AGE_MS) fs.unlink(file, failure => {
+          if (failure && failure.code !== 'ENOENT') console.error('[Cleaner] 临时文件删除失败:', failure.code)
+        })
+      })
+    }
+  })
 }
 
-/** 启动定期清理：启动时清一次，之后每小时一次。timer.unref 不阻碍进程退出 */
+/** 启动时及每分钟清理一次；失败保留至下一次重试。 */
 function startUploadsCleaner() {
   cleanOnce()
   const timer = setInterval(cleanOnce, INTERVAL_MS)
   if (timer.unref) timer.unref()
 }
 
-module.exports = { startUploadsCleaner }
+module.exports = { startUploadsCleaner, cleanOnce }
