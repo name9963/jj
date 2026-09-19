@@ -47,7 +47,10 @@ async function transcribeVideo(mediaPath, signal) {
   try {
     await extractAudio(mediaPath, wavPath, signal)
     const text = await runWhisper(wavPath, outPrefix, txtPath, signal)
-    if (!text) {
+    // 音频中没有有效人声时，whisper 会拿 --prompt 当"上文"续写，
+    // 输出形如"请使用简体中文准确转写人名、数字…"重复多遍（实测出现过重复 6 次的整段指令）。
+    // 这种输出对用户毫无意义，必须与"识别为空"同样处理，否则会把识别指令当成文案返回。
+    if (!text || isEchoedPrompt(text)) {
       throw new Error('没有识别到人说话的内容，这个视频可能只有音乐或没有声音')
     }
     return text
@@ -110,6 +113,8 @@ function extractAudio(mediaPath, wavPath, signal) {
  *   打到 stdout 还是 stderr 并不一致，读文件最稳；文件缺失时再退回读 stdout/stderr。
  * -nt 不输出时间戳、-np 不打印进度日志。
  * --prompt 用一句简体中文引导，减少输出繁体字的概率。
+ *   注意：这里只给"语境"、不给"指令"。指令式的 prompt（"请使用简体中文准确转写…"）
+ *   在音频缺乏有效人声时极易被模型整段复读出来，直接把识别指令当成文案返回给用户。
  */
 function runWhisper(wavPath, outPrefix, txtPath, signal) {
   const args = [
@@ -123,7 +128,7 @@ function runWhisper(wavPath, outPrefix, txtPath, signal) {
     '-np',
     '-otxt',
     '-of', outPrefix,
-    '--prompt', '以下是普通话口播内容。请使用简体中文准确转写人名、数字、网络用语和完整句子，并添加自然标点。'
+    '--prompt', '以下是普通话口播内容。'
   ]
 
   return run(WHISPER_BIN, args, WHISPER_TIMEOUT_MS, signal)
@@ -177,6 +182,27 @@ function cleanText(raw) {
     .trim()
 }
 
+// prompt 复读的识别特征。旧版 prompt 是完整指令句，新版只保留语境句，
+// 两代特征词都要覆盖，避免线上新旧版本混跑时漏检。
+const ECHO_MARKERS = /简体中文准确转写|添加自然标点|以下是普通话口播内容|网络用语和完整句子/
+const ECHO_WORDS = /简体中文准确转写|添加自然标点|网络用语|完整句子|以下是普通话口播内容|人名|数字/
+
+/**
+ * 判断识别结果是否只是把 --prompt 复读了回来。
+ * whisper 在没有可识别人声时会把 prompt 当"上文"续写，实测出现过
+ * "请使用简体中文准确转写人名,数字、完整句子，并添加自然标点。"重复 6 次共 180 字。
+ * 判定方法：先看是否命中 prompt 特征词，再剥掉这些片段看有没有剩下真实内容。
+ */
+function isEchoedPrompt(text) {
+  const raw = String(text || '')
+  if (!ECHO_MARKERS.test(raw)) return false
+  const residue = raw
+    .split(/[，。！？、,.!?；;：:\s]+/)
+    .filter((seg) => seg && !ECHO_WORDS.test(seg))
+    .join('')
+  return residue.length < 8
+}
+
 /**
  * 统一的子进程执行封装：带超时、收集 stdout/stderr，不因非 0 退出码直接 reject
  * （由调用方按业务判断），spawn 本身失败（如找不到可执行文件）才 reject。
@@ -219,4 +245,4 @@ function tail(text) {
   return (text || '').trim().slice(-300)
 }
 
-module.exports = { transcribeVideo, MAX_SECONDS }
+module.exports = { transcribeVideo, MAX_SECONDS, isEchoedPrompt }
