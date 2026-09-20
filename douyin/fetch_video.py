@@ -74,6 +74,24 @@ def main():
     raw_input = sys.argv[1].strip()
     session = http_client.Session()
 
+    # ---- 可选：注入浏览器 Cookie（DOUYIN_COOKIES 环境变量）----
+    # 数据中心 IP（如云托管）访问抖音会被直接 403（Uifid Not Found），
+    # 连 Argus 挑战机会都不给 —— uifid 只能由真实浏览器交互产生。
+    # 因此支持把用户浏览器里的 Cookie（至少含 uifid，建议带 ttwid/msToken）
+    # 通过环境变量注入，脚本将完全以该身份请求。
+    injected_raw = (os.getenv("DOUYIN_COOKIES") or "").strip()
+    injected = {}
+    if injected_raw:
+        for pair in injected_raw.replace("\n", ";").split(";"):
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                k, v = k.strip(), v.strip()
+                if k and v:
+                    injected[k] = v
+        missing = [k for k in ("uifid", "UIFID") if k not in injected]
+        if len(injected) < 2 or (missing and len(missing) == 2):
+            out({"ok": False, "error": "DOUYIN_COOKIES 里没识别到 uifid，请从登录后的 douyin.com 复制完整 Cookie"})
+
     try:
         def read_cookies(sess):
             """curl_cffi 的 Cookies 与 requests 不同：不能按对象迭代取 .name。"""
@@ -91,43 +109,48 @@ def main():
         def cookie_header_of(jar):
             return "; ".join(f"{k}={v}" for k, v in jar.items() if v)
 
-        # ---- 1. 预热 + 过 Argus 挑战 ----
-        # 首次响应会下发 __ac_nonce，但直接请求 API 会得到
-        # `403 Blocked by ArgusSecurityPlugin Uifid Not Found`。
-        # 必须用页面 JS（VMP）算出 __ac_signature 再请求一次，抖音才肯下发 UIFID。
-        try:
-            session.get(HOST + "/", headers={"User-Agent": UA})
-        except Exception as e:
-            out({"ok": False, "error": f"访问抖音首页失败: {type(e).__name__}: {e}"})
-
-        cookies = read_cookies(session)
+        # ---- 1. 预热 + 过 Argus 挑战（注入 Cookie 模式则整体跳过）----
         challenge_notes = []
-        cookie_with_sig = cookie_header_of(cookies)
-
-        nonce = cookies.get("__ac_nonce") or ""
-        has_uifid = bool(cookies.get("UIFID") or cookies.get("uifid"))
-        if nonce and not has_uifid:
+        if injected:
+            cookies = dict(injected)
+            cookie_with_sig = injected_raw.replace("\n", "; ")
+            challenge_notes.append(f"使用注入的浏览器 Cookie（{len(injected)} 项）")
+        else:
+            # 首次响应会下发 __ac_nonce，但直接请求 API 会得到
+            # `403 Blocked by ArgusSecurityPlugin Uifid Not Found`。
+            # 必须用页面 JS（VMP）算出 __ac_signature 再请求一次，抖音才肯下发 UIFID。
             try:
-                from utils.acrawler import generate_ac_signature
-                ac = generate_ac_signature(
-                    nonce=nonce,
-                    cookie=cookie_with_sig,
-                    url="https://www.douyin.com/",
-                    ua=UA,
-                )
-                sig = str((ac or {}).get("sig") or "")
-                if sig:
-                    cookie_with_sig = f"{cookie_with_sig}; __ac_signature={sig}"
-                    session.get(HOST + "/", headers={"User-Agent": UA, "Cookie": cookie_with_sig})
-                    cookies = read_cookies(session)
-                    has_uifid = bool(cookies.get("UIFID") or cookies.get("uifid"))
-                    challenge_notes.append(f"已提交 __ac_signature（{len(sig)} 字符），UIFID={'有' if has_uifid else '无'}")
-                else:
-                    challenge_notes.append("acrawler 返回空签名")
+                session.get(HOST + "/", headers={"User-Agent": UA})
             except Exception as e:
-                challenge_notes.append(f"acrawler 执行失败: {type(e).__name__}: {e}")
-        elif has_uifid:
-            challenge_notes.append("预热即拿到 UIFID")
+                out({"ok": False, "error": f"访问抖音首页失败: {type(e).__name__}: {e}"})
+
+            cookies = read_cookies(session)
+            cookie_with_sig = cookie_header_of(cookies)
+
+            nonce = cookies.get("__ac_nonce") or ""
+            has_uifid = bool(cookies.get("UIFID") or cookies.get("uifid"))
+            if nonce and not has_uifid:
+                try:
+                    from utils.acrawler import generate_ac_signature
+                    ac = generate_ac_signature(
+                        nonce=nonce,
+                        cookie=cookie_with_sig,
+                        url="https://www.douyin.com/",
+                        ua=UA,
+                    )
+                    sig = str((ac or {}).get("sig") or "")
+                    if sig:
+                        cookie_with_sig = f"{cookie_with_sig}; __ac_signature={sig}"
+                        session.get(HOST + "/", headers={"User-Agent": UA, "Cookie": cookie_with_sig})
+                        cookies = read_cookies(session)
+                        has_uifid = bool(cookies.get("UIFID") or cookies.get("uifid"))
+                        challenge_notes.append(f"已提交 __ac_signature（{len(sig)} 字符），UIFID={'有' if has_uifid else '无'}")
+                    else:
+                        challenge_notes.append("acrawler 返回空签名")
+                except Exception as e:
+                    challenge_notes.append(f"acrawler 执行失败: {type(e).__name__}: {e}")
+            elif has_uifid:
+                challenge_notes.append("预热即拿到 UIFID")
 
         ttwid = cookies.get("ttwid", "") or ""
 
@@ -136,13 +159,14 @@ def main():
         if not aweme_id:
             out({"ok": False, "error": "无法从链接中识别作品 ID，请确认是抖音分享链接"})
 
-        # ---- 3. 生成 msToken ----
-        ms_token = ""
-        try:
-            from utils.mstoken import get_mstoken
-            ms_token = get_mstoken(ttwid=ttwid) or ""
-        except Exception:
-            ms_token = rand_token()
+        # ---- 3. msToken（注入模式优先用 Cookie 里自带的）----
+        ms_token = injected.get("msToken", "")
+        if not ms_token:
+            try:
+                from utils.mstoken import get_mstoken
+                ms_token = get_mstoken(ttwid=ttwid) or ""
+            except Exception:
+                ms_token = rand_token()
 
         # ---- 4. 组装参数（顺序按抓包：verifyFp/fp 放最后，a_bogus 之后）----
         profile = get_profile()
