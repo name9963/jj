@@ -1,5 +1,0 @@
-node_modules
-uploads/*.png
-uploads/*.jpg
-uploads/*.mp4
-.git
