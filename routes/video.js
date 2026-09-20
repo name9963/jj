@@ -41,11 +41,11 @@ router.get('/proxy', async (req, res) => {
   }
 
   try {
-    // 透传客户端 Range 头，支持视频拖动/分段下载，避免每次都全量回源、省出口流量
+    // 透传客户端 Range 头，支持视频拖动/分段下载，避免每次都全量回源、省出口流量。
+    // ⚠️ 必须始终携带 Range：实测 B站 CDN 对机房 IP 的「无 Range 全量请求」会挂起不回数据
+    // （带任意 Range 则立即正常流式返回），导致客户端 downloadFile 一直等到超时。
     const upstreamHeaders = headersFor(targetUrl)
-    if (req.headers.range) {
-      upstreamHeaders.Range = req.headers.range
-    }
+    upstreamHeaders.Range = req.headers.range || 'bytes=0-'
 
     const upstream = await axios.get(targetUrl, {
       responseType: 'stream',
