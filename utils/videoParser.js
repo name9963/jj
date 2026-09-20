@@ -428,7 +428,9 @@ async function parseBilibili(url) {
 
   return {
     videoUrl: `/api/video/proxy?url=${encodeURIComponent(cdnUrl)}`,
-    cover: pic || '',
+    // 小程序基础库 3.x 已不再支持 HTTP 图片链接，B站返回的封面常为 http://，
+    // 统一升级为 https，避免真机上封面空白
+    cover: (pic || '').replace(/^http:\/\//i, 'https://'),
     title: title || 'B站视频',
     needsProxy: true // 提示前端此地址需拼服务器域名前缀(相对路径)，与抖音等平台的绝对CDN地址不同
   }
