@@ -70,10 +70,20 @@ FROM node:22-bookworm-slim
 WORKDIR /app
 
 # ffmpeg 用于抽音轨/转码（语音识别预处理）
+# python3 用于抖音解析：抖音要求浏览器 TLS 指纹 + a_bogus + x-secsdk-web-signature，
+#   Node 生态缺乏可靠实现，故用 douyin/ 下的 Python 脚本（curl_cffi + 纯算法签名）。
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ffmpeg ca-certificates \
+      ffmpeg ca-certificates python3 python3-venv \
  && rm -rf /var/lib/apt/lists/* \
- && ffmpeg -version >/dev/null
+ && ffmpeg -version >/dev/null \
+ && python3 --version
+
+# 抖音解析依赖：curl_cffi 提供 Chrome TLS/HTTP2 指纹伪装，cryptography 供设备指纹模块使用。
+# 装进独立 venv，避免受 PEP 668(externally-managed) 限制，也便于将来单独升级。
+RUN python3 -m venv /opt/douyin \
+ && /opt/douyin/bin/pip install --no-cache-dir --upgrade pip \
+ && /opt/douyin/bin/pip install --no-cache-dir curl_cffi cryptography \
+ && /opt/douyin/bin/python -c "import curl_cffi, cryptography; print('douyin deps ok')"
 
 COPY --from=builder /out/whisper-cli /usr/local/bin/whisper-cli
 
@@ -92,5 +102,7 @@ EXPOSE 80
 ENV PORT=80
 ENV WHISPER_BIN=/usr/local/bin/whisper-cli
 ENV WHISPER_MODEL=/app/models/ggml-model.bin
+# 抖音解析用的 Python 解释器（含 curl_cffi，提供 Chrome TLS 指纹）
+ENV DOUYIN_PYTHON=/opt/douyin/bin/python
 
 CMD ["node", "app.js"]

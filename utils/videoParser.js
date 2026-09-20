@@ -115,59 +115,38 @@ async function getRedirectUrl(url) {
 }
 
 /**
- * 抖音解析
- * 官方 JSON API(iesdouyin.com/web/api/v2/aweme/iteminfo)已加入签名校验，
- * 直连会返回 encrypt_data_miss，因此改为请求分享页 HTML，
- * 从页面内嵌的 _ROUTER_DATA(Next.js SSR 数据) 里取作品信息。
- * 该数据同时覆盖普通视频(/share/video/)和图文作品(/share/note/)两种页面。
+ * 抖音解析。
+ *
+ * 历史沿革（值得保留，因为这条路被反复走过）：
+ *   1. 最早用官方 JSON API `iesdouyin.com/web/api/v2/aweme/iteminfo`，后被加签名校验，直连返回 encrypt_data_miss；
+ *   2. 于是改为请求分享页 HTML，从内嵌的 `_ROUTER_DATA.loaderData['video_(id)/page'].videoInfoRes` 取数据；
+ *   3. 2026 年起抖音改为客户端渲染，HTML 里连 `play_addr` / `item_list` 字符串都不再出现（五种 UA 实测一致），该方案失效；
+ *   4. 补 Cookie、换 UA 均无效；且抖音要求浏览器 TLS 指纹 + a_bogus + x-secsdk-web-signature 三者齐备。
+ *
+ * 现状：交由 `douyin/` 下的 Python 脚本完成（理由见 utils/douyinClient.js）。
  */
 async function parseDouyin(url) {
-  // 短链接先获取重定向，落地到 iesdouyin.com/share/video|note/<id>/
-  const realUrl = assertAllowedRedirect(
-    await getRedirectUrl(url),
-    ['douyin.com', 'iesdouyin.com'],
-    '抖音'
-  )
+  const { parseDouyin: parseViaScript } = require('./douyinClient')
+  const result = await parseViaScript(url)
+  if (!result || !result.videoUrl) throw new Error('无法获取抖音作品地址')
 
-  const res = await axios.get(realUrl, { headers: HEADERS })
-  const html = res.data
-
-  const routerMatch = html.match(/_ROUTER_DATA\s*=\s*(\{.+?\})\s*<\/script>/)
-  if (!routerMatch) throw new Error('无法解析抖音页面数据')
-
-  const routerData = JSON.parse(routerMatch[1])
-  const pageKey = Object.keys(routerData.loaderData || {}).find(k => k.endsWith('/page'))
-  const item = pageKey && routerData.loaderData[pageKey].videoInfoRes &&
-               routerData.loaderData[pageKey].videoInfoRes.item_list &&
-               routerData.loaderData[pageKey].videoInfoRes.item_list[0]
-  if (!item) throw new Error('视频不存在或已被删除')
-
-  const title = item.desc || '抖音视频'
-
-  // 图文作品(aweme_type=68/2 等)：每张图从 url_list 中优先选择 JPEG，
-  // 返回完整 imageUrls，复用前端图集预览和“保存全部图片”逻辑。
-  if (item.images && item.images.length > 0) {
-    const imageUrls = item.images
-      .map(image => pickImageUrl(image && image.url_list))
-      .filter(Boolean)
+  // 图文作品：返回完整 imageUrls，复用前端图集预览与“保存全部图片”逻辑
+  if (result.isImage) {
+    const imageUrls = (result.imageUrls && result.imageUrls.length ? result.imageUrls : [result.videoUrl]).filter(Boolean)
     if (imageUrls.length === 0) throw new Error('无法获取抖音图文作品图片')
     return {
       videoUrl: imageUrls[0],
       imageUrls,
-      cover: imageUrls[0],
-      title,
+      cover: result.cover || imageUrls[0],
+      title: result.title || '抖音图文',
       isImage: true
     }
   }
 
-  // 普通视频：获取无水印地址(playwm→play)
-  let videoUrl = item.video.play_addr.url_list[0]
-  videoUrl = videoUrl.replace('playwm', 'play')
-
   return {
-    videoUrl,
-    cover: (item.video.cover && item.video.cover.url_list[0]) || '',
-    title
+    videoUrl: result.videoUrl,
+    cover: result.cover || '',
+    title: result.title || '抖音视频'
   }
 }
 
