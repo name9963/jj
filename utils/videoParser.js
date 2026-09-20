@@ -437,6 +437,7 @@ async function parseBilibili(url) {
 /** 代理白名单：只允许转发已支持平台的官方 CDN 域名，防止被当成任意地址的匿名代理(SSRF) */
 const PROXY_HOST_WHITELIST = [
   /(^|\.)bilivideo\.com$/,   // B站
+  /(^|\.)hdslb\.com$/,       // B站图片CDN(封面/头像)
   /(^|\.)douyinvod\.com$/,   // 抖音视频CDN
   /(^|\.)zjcdn\.com$/,       // 字节系CDN(抖音/皮皮虾)
   /(^|\.)bytecdn\.cn$/,
