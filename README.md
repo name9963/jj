@@ -42,6 +42,22 @@
 
 未配置 KEY 时功能仍可用，只是走本地算法。
 
+### 抖音解析（实现方式与其他平台不同）
+
+抖音自 2026 年起改为客户端渲染，`_ROUTER_DATA` 不再内嵌作品数据，早期「解析分享页 HTML」的方案已失效。现在由镜像内的 Python 脚本完成：
+
+```
+Node 后端 → 子进程 → douyin/fetch_video.py
+                        ├─ curl_cffi              冒充 Chrome 的 TLS/HTTP2 指纹
+                        ├─ a_bogus                纯算法生成（无需第三方包）
+                        ├─ x-secsdk-web-signature
+                        └─ msToken + 浏览器指纹档案
+```
+
+**为什么必须伪装 TLS 指纹**：抖音在 **TLS 握手阶段**就会识别非浏览器客户端——指纹不符时，即使签名完全正确也只会得到空响应。
+
+镜像构建时安装 `python3` 与独立 venv（`curl_cffi`、`cryptography`），解释器路径由 `DOUYIN_PYTHON` 指定（默认 `/opt/douyin/bin/python`）。快手 / B站 / 微博 / 皮皮虾仍用原有实现，互不影响。
+
 ### 口播识别的降级链路
 
 1. **百炼 Paraformer**（需 `DASHSCOPE_API_KEY`）— 异步接口，阿里云需**回源拉取音频**，因此 `PUBLIC_BASE_URL` 必须公网可达
