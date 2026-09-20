@@ -10,3 +10,14 @@ uploads
 ai-venv
 ai-inpaint
 *.log
+
+# 模型由 builder 阶段下载后 COPY 进来；本地这份 lama.onnx 有 89MB，
+# 若被 `COPY . .` 带进镜像会白白多占一层空间。
+models/*.onnx
+models/*.bin
+
+# Python 缓存与临时目录
+**/__pycache__
+*.pyc
+_to_delete
+test_live.js
