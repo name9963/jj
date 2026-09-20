@@ -75,22 +75,60 @@ def main():
     session = http_client.Session()
 
     try:
-        # ---- 1. 预热：拿 ttwid 等基础 Cookie（TLS 指纹由 curl_cffi 提供）----
+        def read_cookies(sess):
+            """curl_cffi 的 Cookies 与 requests 不同：不能按对象迭代取 .name。"""
+            got = {}
+            try:
+                for name in sess.cookies.keys():
+                    got[name] = sess.cookies.get(name)
+            except Exception:
+                try:
+                    got = dict(sess.cookies)
+                except Exception:
+                    got = {}
+            return got
+
+        def cookie_header_of(jar):
+            return "; ".join(f"{k}={v}" for k, v in jar.items() if v)
+
+        # ---- 1. 预热 + 过 Argus 挑战 ----
+        # 首次响应会下发 __ac_nonce，但直接请求 API 会得到
+        # `403 Blocked by ArgusSecurityPlugin Uifid Not Found`。
+        # 必须用页面 JS（VMP）算出 __ac_signature 再请求一次，抖音才肯下发 UIFID。
         try:
             session.get(HOST + "/", headers={"User-Agent": UA})
         except Exception as e:
             out({"ok": False, "error": f"访问抖音首页失败: {type(e).__name__}: {e}"})
 
-        # curl_cffi 的 Cookies 与 requests 不同：需按名称取值，不能按对象迭代
-        cookies = {}
-        try:
-            for name in session.cookies.keys():
-                cookies[name] = session.cookies.get(name)
-        except Exception:
+        cookies = read_cookies(session)
+        challenge_notes = []
+        cookie_with_sig = cookie_header_of(cookies)
+
+        nonce = cookies.get("__ac_nonce") or ""
+        has_uifid = bool(cookies.get("UIFID") or cookies.get("uifid"))
+        if nonce and not has_uifid:
             try:
-                cookies = dict(session.cookies)
-            except Exception:
-                cookies = {}
+                from utils.acrawler import generate_ac_signature
+                ac = generate_ac_signature(
+                    nonce=nonce,
+                    cookie=cookie_with_sig,
+                    url="https://www.douyin.com/",
+                    ua=UA,
+                )
+                sig = str((ac or {}).get("sig") or "")
+                if sig:
+                    cookie_with_sig = f"{cookie_with_sig}; __ac_signature={sig}"
+                    session.get(HOST + "/", headers={"User-Agent": UA, "Cookie": cookie_with_sig})
+                    cookies = read_cookies(session)
+                    has_uifid = bool(cookies.get("UIFID") or cookies.get("uifid"))
+                    challenge_notes.append(f"已提交 __ac_signature（{len(sig)} 字符），UIFID={'有' if has_uifid else '无'}")
+                else:
+                    challenge_notes.append("acrawler 返回空签名")
+            except Exception as e:
+                challenge_notes.append(f"acrawler 执行失败: {type(e).__name__}: {e}")
+        elif has_uifid:
+            challenge_notes.append("预热即拿到 UIFID")
+
         ttwid = cookies.get("ttwid", "") or ""
 
         # ---- 2. 取 aweme_id ----
@@ -152,15 +190,20 @@ def main():
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "zh-CN,zh;q=0.9",
         }
+        # 带上完整 Cookie（含 __ac_signature / UIFID），再补 msToken
+        full_cookie = cookie_with_sig
         if ms_token:
-            headers["Cookie"] = f"msToken={ms_token}" + (f"; ttwid={ttwid}" if ttwid else "")
+            full_cookie = f"msToken={ms_token}; {full_cookie}" if full_cookie else f"msToken={ms_token}"
+        if full_cookie:
+            headers["Cookie"] = full_cookie
 
         resp = session.get(final_url, headers=headers)
         status = getattr(resp, "status_code", 0)
         body = getattr(resp, "text", "") or ""
 
         if status != 200:
-            out({"ok": False, "error": f"接口返回 HTTP {status}", "bodyHead": body[:300]})
+            hint = f"｜挑战处理：{'; '.join(challenge_notes)}" if challenge_notes else ""
+            out({"ok": False, "error": f"接口返回 HTTP {status}{hint}", "bodyHead": body[:300]})
 
         if not body.strip():
             out({"ok": False, "error": "接口返回空响应（通常是风控未通过：TLS 指纹/Cookie/签名之一不符）"})
