@@ -446,6 +446,7 @@ const PROXY_HOST_WHITELIST = [
   /(^|\.)snssdk\.com$/,
   /(^|\.)iesdouyin\.com$/,
   /(^|\.)douyinpic\.com$/,   // 抖音图集
+  /(^|\.)douyinstatic\.com$/, // 抖音静态媒体(图集内嵌视频等)
   /(^|\.)kwaicdn\.com$/,     // 快手
   /(^|\.)kwimgs\.com$/,
   /(^|\.)yximgs\.com$/,      // 快手 mp4 直链域名

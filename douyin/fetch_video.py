@@ -249,6 +249,12 @@ def main():
         video = detail.get("video") or {}
         play = video.get("play_addr") or {}
         urls = play.get("url_list") or []
+        # ---- 8.5 统一代理包装：小程序 downloadFile 只能访问后台白名单域名，
+        # 而各平台 CDN 域名动态变化，媒体地址一律改为服务端代理的相对路径
+        # （服务端 /api/video/proxy 维护全平台 CDN 白名单并携带防盗链请求头）。
+        def via_proxy(u):
+            return f"/api/video/proxy?url={urllib.parse.quote(u, safe='')}"
+
         if not urls:
             # 图文作品
             images = detail.get("images") or []
@@ -258,8 +264,9 @@ def main():
                 if lst:
                     image_urls.append(lst[-1])
             if image_urls:
-                out({"ok": True, "isImage": True, "videoUrl": image_urls[0],
-                     "imageUrls": image_urls, "cover": image_urls[0],
+                proxied = [via_proxy(u) for u in image_urls]
+                out({"ok": True, "isImage": True, "videoUrl": proxied[0],
+                     "imageUrls": proxied, "cover": image_urls[0],
                      "title": detail.get("desc") or "抖音图文", "awemeId": aweme_id})
             out({"ok": False, "error": "作品里没有可用的视频/图片地址"})
 
@@ -271,10 +278,11 @@ def main():
         if isinstance(cov, dict) and cov.get("url_list"):
             cover = cov["url_list"][0]
 
+        proxied = [via_proxy(u) for u in clean]
         out({
             "ok": True,
-            "videoUrl": clean[0],
-            "allUrls": clean[:3],
+            "videoUrl": proxied[0],
+            "allUrls": proxied[:3],
             "cover": cover,
             "title": detail.get("desc") or "抖音视频",
             "awemeId": aweme_id,
