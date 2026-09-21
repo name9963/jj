@@ -18,10 +18,13 @@ const TIMEOUT_MS = Number(process.env.DOUYIN_TIMEOUT || 60000)
 
 /**
  * 解析抖音分享链接，返回无水印视频/图文信息。
+ * 抖音风控存在随机性（同一链接时通时不通），遇到可重试的风控类失败时
+ * 自动用全新会话（新 TLS 握手 + 新 Cookie + 新签名）再试一次，显著提高成功率。
  * @param {string} shareUrl 分享链接（含短链）或纯 aweme_id
+ * @param {number} _attempt 内部重试计数
  * @returns {Promise<{videoUrl:string, cover:string, title:string, awemeId:string, isImage?:boolean, imageUrls?:string[]}>}
  */
-function parseDouyin(shareUrl) {
+function parseDouyin(shareUrl, _attempt = 0) {
   return new Promise((resolve, reject) => {
     if (!shareUrl || typeof shareUrl !== 'string') {
       reject(new Error('缺少抖音链接'))
@@ -55,6 +58,16 @@ function parseDouyin(shareUrl) {
             isImage: Boolean(payload.isImage),
             imageUrls: payload.imageUrls || undefined
           })
+          return
+        }
+
+        // 抖音风控存在随机拦截：空响应/短链解析失败/403 属可重试错误
+        const failReason = (payload && payload.error) || ''
+        const retryable = /空响应|无法从链接中识别|HTTP 403|接口返回 HTTP 5/.test(failReason)
+        if (retryable && _attempt < 1) {
+          setTimeout(() => {
+            parseDouyin(shareUrl, _attempt + 1).then(resolve, reject)
+          }, 800)
           return
         }
 
