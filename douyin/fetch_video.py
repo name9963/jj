@@ -245,29 +245,32 @@ def main():
             out({"ok": False, "error": f"响应里没有作品数据（status_code={data.get('status_code')}）",
                  "bodyHead": body[:300]})
 
-        # ---- 8. 取无水印地址 ----
-        video = detail.get("video") or {}
-        play = video.get("play_addr") or {}
-        urls = play.get("url_list") or []
         # ---- 8.5 统一代理包装：小程序 downloadFile 只能访问后台白名单域名，
         # 而各平台 CDN 域名动态变化，媒体地址一律改为服务端代理的相对路径
         # （服务端 /api/video/proxy 维护全平台 CDN 白名单并携带防盗链请求头）。
         def via_proxy(u):
             return f"/api/video/proxy?url={urllib.parse.quote(u, safe='')}"
 
+        # ---- 8.6 图集优先判断 ----
+        # 图文作品(note)的 play_addr 往往只是背景音乐(M4A 音频)，若先判断 play_addr
+        # 会把音频误当成视频返回；必须先检查 images 是否存在。
+        images = detail.get("images") or []
+        image_urls = []
+        for img in images:
+            lst = (img or {}).get("url_list") or []
+            if lst:
+                image_urls.append(lst[-1])
+        if image_urls:
+            proxied = [via_proxy(u) for u in image_urls]
+            out({"ok": True, "isImage": True, "videoUrl": proxied[0],
+                 "imageUrls": proxied, "cover": image_urls[0],
+                 "title": detail.get("desc") or "抖音图文", "awemeId": aweme_id})
+
+        # ---- 8.7 视频作品 ----
+        video = detail.get("video") or {}
+        play = video.get("play_addr") or {}
+        urls = play.get("url_list") or []
         if not urls:
-            # 图文作品
-            images = detail.get("images") or []
-            image_urls = []
-            for img in images:
-                lst = (img or {}).get("url_list") or []
-                if lst:
-                    image_urls.append(lst[-1])
-            if image_urls:
-                proxied = [via_proxy(u) for u in image_urls]
-                out({"ok": True, "isImage": True, "videoUrl": proxied[0],
-                     "imageUrls": proxied, "cover": image_urls[0],
-                     "title": detail.get("desc") or "抖音图文", "awemeId": aweme_id})
             out({"ok": False, "error": "作品里没有可用的视频/图片地址"})
 
         # play_addr 里可能混有水印版本，优先选 uri 里不含 watermark 的
