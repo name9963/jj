@@ -8,6 +8,7 @@ const fs = require('fs')
 const sharp = require('sharp')
 const crypto = require('crypto')
 const resources = require('../utils/resources')
+const secCheck = require('../utils/secCheck')
 
 // 配置 multer 存储
 const storage = multer.diskStorage({
@@ -46,6 +47,21 @@ router.post('/', upload.single('file'), async (req, res, next) => {
 
   try {
     const kind = await validateUploadedFile(req.file)
+
+    // ---- 内容安全检测（UGC 合规要求，微信审核强制项）----
+    // 检测不通过时只提示「内容含违规信息」，不暴露具体违规类型（审核明确要求）。
+    try {
+      const check = await secCheck.checkUpload(req.file.path, req.file.mimetype)
+      if (check && check.safe === false) {
+        fs.unlink(req.file.path, () => {})
+        return res.json({ code: -1, msg: '上传内容含违规信息', data: null })
+      }
+    } catch (checkErr) {
+      // 检测服务异常（未配置密钥/微信接口抖动）时保守放行，仅记录告警，
+      // 避免因检测链路故障导致全部上传不可用；正式环境须确保密钥已配置。
+      console.warn('[SecCheck] 内容安全检测未能执行：', checkErr.message)
+    }
+
     const resource = resources.register(req.file.path, req.owner, kind)
 
     res.json({

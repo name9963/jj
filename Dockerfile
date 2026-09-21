@@ -92,6 +92,7 @@ RUN npm ci --omit=dev \
  && node -e "require('sharp'); console.log('sharp runtime ok')"
 
 COPY . .
+RUN /opt/douyin/bin/python -m unittest discover -s douyin -p test_media_urls.py
 
 # 模型放在 COPY . . 之后，避免被构建上下文覆盖
 COPY --from=builder /out/ggml-model.bin /app/models/ggml-model.bin

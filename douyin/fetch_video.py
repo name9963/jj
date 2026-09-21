@@ -21,7 +21,6 @@ import json
 import time
 import random
 import string
-import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -29,6 +28,7 @@ from utils import http_client                       # noqa: E402
 from utils.ab_pure import ABogusPureSigner          # noqa: E402
 from utils import secsdk_web_sign as secsdk         # noqa: E402
 from utils.fingerprint import get_profile           # noqa: E402
+from media_urls import proxy_media_url              # noqa: E402
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
@@ -249,8 +249,6 @@ def main():
         # ---- 8.5 统一代理包装：小程序 downloadFile 只能访问后台白名单域名，
         # 而各平台 CDN 域名动态变化，媒体地址一律改为服务端代理的相对路径
         # （服务端 /api/video/proxy 维护全平台 CDN 白名单并携带防盗链请求头）。
-        def via_proxy(u):
-            return f"/api/video/proxy?url={urllib.parse.quote(u, safe='')}"
 
         # ---- 8.6 图集优先判断 ----
         # 图文作品(note)的 play_addr 往往只是背景音乐(M4A 音频)，若先判断 play_addr
@@ -262,7 +260,7 @@ def main():
             if lst:
                 image_urls.append(lst[-1])
         if image_urls:
-            proxied = [via_proxy(u) for u in image_urls]
+            proxied = [proxy_media_url(u) for u in image_urls]
             out({"ok": True, "isImage": True, "videoUrl": proxied[0],
                  "imageUrls": proxied, "cover": image_urls[0],
                  "title": detail.get("desc") or "抖音图文", "awemeId": aweme_id})
@@ -282,7 +280,7 @@ def main():
         if isinstance(cov, dict) and cov.get("url_list"):
             cover = cov["url_list"][0]
 
-        proxied = [via_proxy(u) for u in clean]
+        proxied = [proxy_media_url(u) for u in clean]
         out({
             "ok": True,
             "videoUrl": proxied[0],
