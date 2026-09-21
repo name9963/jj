@@ -15,9 +15,36 @@
 const axios = require('axios')
 const sharp = require('sharp')
 const fs = require('fs')
+const https = require('https')
 
 const API_BASE = 'https://api.weixin.qq.com'
 const IMG_MAX_BYTES = 1024 * 1024 // v1 imgSecCheck 限制 1MB
+
+// 微信云托管等云环境的出网流量会经过平台代理，代理证书可能是自签的，
+// 导致 Node 默认证书校验失败（报 self-signed certificate）。
+// 这里默认走严格校验，仅在遇到证书链问题时对微信官方域名降级重试一次。
+const SELF_SIGNED_RE = /self[- ]signed|SELF_SIGNED_CERT|UNABLE_TO_VERIFY|CERT_HAS_EXPIRED|unable to verify/i
+
+/**
+ * 带证书降级重试的请求封装。
+ * 仅当错误属于证书链问题、且目标为微信官方域名时才降级，其余错误原样抛出。
+ */
+async function wxRequest(config) {
+  try {
+    return await axios(config)
+  } catch (err) {
+    const msg = String((err && err.message) || '')
+    const isWxHost = /^https:\/\/api\.weixin\.qq\.com\//.test(String(config.url || ''))
+    if (isWxHost && SELF_SIGNED_RE.test(msg)) {
+      console.warn('[SecCheck] 证书校验失败，对微信域名降级重试：', msg)
+      return await axios({
+        ...config,
+        httpsAgent: new https.Agent({ rejectUnauthorized: false })
+      })
+    }
+    throw err
+  }
+}
 
 // access_token 缓存：微信侧有效期 7200s，提前 5 分钟过期以留安全边界
 let tokenCache = { value: '', expiresAt: 0 }
@@ -33,7 +60,9 @@ async function getAccessToken() {
   const secret = process.env.WX_SECRET
   if (!appid || !secret) throw new Error('未配置 WX_APPID / WX_SECRET')
 
-  const { data } = await axios.get(`${API_BASE}/cgi-bin/token`, {
+  const { data } = await wxRequest({
+    method: 'get',
+    url: `${API_BASE}/cgi-bin/token`,
     params: { grant_type: 'client_credential', appid, secret },
     timeout: 10000
   })
@@ -92,11 +121,13 @@ async function checkImage(filePath) {
   const form = new FormData()
   form.append('media', new Blob([body], { type: 'image/jpeg' }), 'check.jpg')
 
-  const { data } = await axios.post(
-    `${API_BASE}/wxa/img_sec_check?access_token=${token}`,
-    form,
-    { timeout: 15000, headers: { 'Content-Type': 'multipart/form-data' } }
-  )
+  const { data } = await wxRequest({
+    method: 'post',
+    url: `${API_BASE}/wxa/img_sec_check?access_token=${token}`,
+    data: form,
+    timeout: 15000,
+    headers: { 'Content-Type': 'multipart/form-data' }
+  })
 
   // errcode 0 通过；87014 内容含违规；其余为接口异常
   if (data.errcode === 0) return { safe: true }
@@ -115,11 +146,12 @@ async function checkText(content, openid = 'anonymous') {
   if (!text) return { safe: true }
 
   const token = await getAccessToken()
-  const { data } = await axios.post(
-    `${API_BASE}/wxa/msg_sec_check?access_token=${token}`,
-    { version: 2, openid, scene: 2, content: text.slice(0, 2500) },
-    { timeout: 15000 }
-  )
+  const { data } = await wxRequest({
+    method: 'post',
+    url: `${API_BASE}/wxa/msg_sec_check?access_token=${token}`,
+    data: { version: 2, openid, scene: 2, content: text.slice(0, 2500) },
+    timeout: 15000
+  })
 
   // v2 返回 result.suggest：pass / review / risky
   const suggest = data && data.result && data.result.suggest
