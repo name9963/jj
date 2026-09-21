@@ -58,6 +58,23 @@ app.get('/', (req, res) => {
   res.json({ code: 0, msg: '去水印服务运行中', data: null })
 })
 
+// 内容安全检测自检（只读）：确认 UGC 合规链路已部署且密钥可用。
+// 微信审核要求接入内容安全 API，此端点便于判定「代码已部署 + 密钥已配置 + 能换取 token」。
+app.get('/api/health/seccheck', async (req, res) => {
+  const secCheck = require('./utils/secCheck')
+  const data = { deployed: true, configured: secCheck.isConfigured() }
+  if (data.configured) {
+    try {
+      const token = await secCheck.getAccessToken()
+      data.accessToken = token ? 'ok' : 'empty'
+    } catch (e) {
+      data.accessToken = 'fail'
+      data.error = e.message
+    }
+  }
+  res.json({ code: 0, msg: 'seccheck status', data })
+})
+
 // 404 与全局错误处理
 app.use((req, res) => {
   res.status(404).json({ code: -1, msg: '接口不存在', data: null })
